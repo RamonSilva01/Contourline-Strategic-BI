@@ -8,7 +8,8 @@ import re
 
 # ==========================================
 # 🔐 SUA CHAVE API
-OPENAI_API_KEY = "OPENAI_API_KEY" 
+# Pega a chave do cofre de segredos do Streamlit
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"] 
 # ==========================================
 
 st.set_page_config(page_title="Contourline Strategic BI", layout="wide")
@@ -203,4 +204,5 @@ if arq_ganhos and arq_perdas:
         df_csv['Nota (0-5)'] = df_csv['Nota (0-5)'].apply(lambda x: str(x).replace('.', ','))
         
         df_csv.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8-sig')
+
         st.download_button("📥 Baixar CSV Completo (Vendedor + Equipamento)", csv_buffer.getvalue(), "bi_vendedor_v53.csv", "text/csv")
