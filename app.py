@@ -150,7 +150,7 @@ def pontuar_lead(client, row, icp):
 # ==========================================
 
 # Criação das abas gigantes para separar os mundos
-tab_med, tab_estetico = st.tabs(["🏥 UNIVERSO MED (Médicos)", "💆‍♀️ UNIVERSO ESTÉTICO (Clínicas)"])
+tab_med, tab_estetico = st.tabs(["🏥 UNIVERSO MED (Médicos)", "💆‍♀️ UNIVERSO ESTÉTICO "])
 
 def renderizar_interface(categoria_cod, categoria_nome, icone):
     """Função que desenha a tela inteira dependendo da aba escolhida"""
@@ -240,7 +240,8 @@ def renderizar_interface(categoria_cod, categoria_nome, icone):
 
 # --- EXECUÇÃO DAS ABAS ---
 with tab_med:
-    renderizar_interface("MED", "MED (Dermatologistas)", "🏥")
+    renderizar_interface("MED", "🏥")
 
 with tab_estetico:
-    renderizar_interface("ESTETICO", "ESTÉTICO (Clínicas)", "💆‍♀️")
+    renderizar_interface("ESTETICO", "ESTÉTICO, "💆‍♀️")
+
