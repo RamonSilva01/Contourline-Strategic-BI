@@ -66,7 +66,7 @@ def treinar_ia(client, arquivos, categoria):
         nomes.append(arq.name)
         if arq.name.endswith('.txt'):
             conteudo = arq.read().decode('utf-8')
-            regras_manuais += f"\n--- REGRAS DIRETORIA ({arq.name}) ---\n{conteudo}\n"
+            regras_manuais += f"\n--- REGRAS MANUAIS ({arq.name}) ---\n{conteudo}\n"
             arq.seek(0)
         else:
             df_temp = limpar_csv_seguro(arq)
@@ -90,11 +90,11 @@ def treinar_ia(client, arquivos, categoria):
     {amostra_dados}
     {produtos_top}
     
-    REGRAS OBRIGATÓRIAS DO DIRETOR:
+    REGRAS OBRIGATÓRIAS:
     {regras_manuais}
     
     MISSÃO:
-    Crie o ICP definitivo para {categoria}. Priorize as Regras Manuais em caso de conflito.
+    Crie o ICP definitivo para {categoria}. Priorize as Regras Manuais.
     """
     return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content, ", ".join(nomes)
 
@@ -133,7 +133,6 @@ def renderizar_interface(cat_cod, cat_nome):
         st.warning(f"Cérebro {cat_nome} Vazio.")
 
     with st.expander(f"📚 Ensinar {cat_nome}", expanded=not perfil):
-        st.info("Aceita .CSV (Vendas) e .TXT (Regras).")
         arqs = st.file_uploader(f"Arquivos {cat_nome}", type=["csv", "txt"], accept_multiple_files=True, key=f"up_{cat_cod}")
         if arqs and st.button(f"Processar ({cat_cod})"):
             client = OpenAI(api_key=OPENAI_API_KEY)
@@ -150,34 +149,45 @@ def renderizar_interface(cat_cod, cat_nome):
         client = OpenAI(api_key=OPENAI_API_KEY)
         if f'run_{cat_cod}' not in st.session_state: st.session_state[f'run_{cat_cod}'] = False
         
-        # LEITURA
+        # Leitura Segura
         df_l = limpar_csv_seguro(arquivo_perdas)
         cols = df_l.columns
         
-        # MAPEAMENTO
+        # --- MAPEAMENTO DE COLUNAS (DATE HUNTER) ---
         c_motivo = next((c for c in cols if 'motivo' in c.lower()), None)
         c_val = next((c for c in cols if 'valor' in c.lower()), None)
         c_nome = next((c for c in cols if any(x in c.lower() for x in ['nome', 'cliente', 'lead'])), cols[0])
         c_vend = next((c for c in cols if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
         
-        # --- FIX DA DATA: PROCURA MAIS AMPLA ---
-        # Tenta achar colunas que tenham 'data', 'date', 'criado', 'fechamento', 'perda'
-        c_data = next((c for c in cols if any(x in c.lower() for x in ['fechamento', 'perda', 'data', 'date', 'created'])), None)
+        # CAÇADOR DE DATAS (HIERARQUIA)
+        # 1. Prioridade: Fechamento ou Perda
+        c_data = next((c for c in cols if any(x in c.lower() for x in ['fechamento', 'perda', 'closing'])), None)
+        # 2. Secundário: Data de criação, mas EVITA nascimento
+        if not c_data:
+            c_data = next((c for c in cols if 'data' in c.lower() and 'nasc' not in c.lower()), None)
         
+        # Feedback Visual para você conferir
+        if c_data:
+            st.caption(f"📅 Coluna de Data identificada: **{c_data}**")
+        else:
+            st.error("⚠️ Nenhuma coluna de data (Fechamento/Perda) encontrada no CSV.")
+
         if not c_vend: df_l['Vend'] = "N/A"; c_vend = 'Vend'
         
-        # VALOR E DATA
+        # Conversão de Valor
         df_l['Valor_Real'] = df_l[c_val].apply(converter_valor_br) if c_val else 0.0
         
-        # --- AQUI ESTÁ A CORREÇÃO DE DATA ---
+        # TRATAMENTO DE DATA (PANDAS INTELIGENTE)
         if c_data:
-            # pd.to_datetime é mágico: entende ISO, BR, US, tudo misturado
+            # Force string conversion first, strip whitespace
+            df_l[c_data] = df_l[c_data].astype(str).str.strip()
+            # dayfirst=True ajuda no padrão BR (DD/MM), errors='coerce' transforma lixo em NaT
             df_l['Data_Obj'] = pd.to_datetime(df_l[c_data], dayfirst=True, errors='coerce')
             df_l['Data_Formatada'] = df_l['Data_Obj'].dt.strftime('%d/%m/%Y').fillna("-")
         else:
             df_l['Data_Formatada'] = "-"
 
-        # FILTROS
+        # Filtros
         df_limpo = df_l.copy()
         removidos = 0
         if filtrar_duplicados and c_motivo:
@@ -188,7 +198,7 @@ def renderizar_interface(cat_cod, cat_nome):
         lista_vends = df_limpo[c_vend].dropna().unique().tolist()
         df_limpo['Novo Dono'] = df_limpo[c_vend].apply(lambda x: sugerir_novo_dono(x, lista_vends))
 
-        # DASHBOARD
+        # Dashboard
         k1, k2, k3 = st.columns(3)
         k1.metric("Leads Reais", len(df_limpo))
         k2.metric("Lixo Removido", removidos)
@@ -201,7 +211,7 @@ def renderizar_interface(cat_cod, cat_nome):
                 top = df_limpo.groupby(c_motivo)['Valor_Real'].sum().nlargest(8).reset_index()
                 st.plotly_chart(px.bar(top, y=c_motivo, x='Valor_Real', orientation='h', title="Gargalos Financeiros"), use_container_width=True)
         
-        # IA
+        # IA Analysis
         if st.button(f"🚀 Analisar ({cat_nome})") or st.session_state[f'run_{cat_cod}']:
             if not st.session_state[f'run_{cat_cod}']:
                 with st.spinner("IA Analisando..."):
@@ -228,7 +238,7 @@ def renderizar_interface(cat_cod, cat_nome):
             st.dataframe(show[cols_final].sort_values('Nota', ascending=False), column_config={
                 "Nota": st.column_config.NumberColumn(format="⭐ %.1f"),
                 "Valor_Real": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Data_Formatada": st.column_config.TextColumn("Data")
+                "Data_Formatada": st.column_config.TextColumn("Data Fechamento")
             }, use_container_width=True)
             
             # EXCEL BRASIL
