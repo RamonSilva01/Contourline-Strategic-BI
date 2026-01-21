@@ -23,7 +23,7 @@ except:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Contourline Dual Intelligence", layout="wide")
-st.title("🏛️ Contourline: Dual Intelligence")
+st.title("🏛️ Contourline: Dual Intelligence v59")
 
 # ==========================================
 # ⚙️ FUNÇÕES DE BANCO DE DADOS (DUAL CORE)
@@ -150,7 +150,7 @@ def pontuar_lead(client, row, icp):
 # ==========================================
 
 # Criação das abas gigantes para separar os mundos
-tab_med, tab_estetico = st.tabs(["🏥 UNIVERSO MED (Médicos)", "💆‍♀️ UNIVERSO ESTÉTICO "])
+tab_med, tab_estetico = st.tabs(["🏥 UNIVERSO MED (Médicos)", "💆‍♀️ UNIVERSO ESTÉTICO (Clínicas)"])
 
 def renderizar_interface(categoria_cod, categoria_nome, icone):
     """Função que desenha a tela inteira dependendo da aba escolhida"""
@@ -240,8 +240,7 @@ def renderizar_interface(categoria_cod, categoria_nome, icone):
 
 # --- EXECUÇÃO DAS ABAS ---
 with tab_med:
-    renderizar_interface("MED", "🏥")
+    renderizar_interface("MED", "MED", "🏥")
 
 with tab_estetico:
-    renderizar_interface("ESTETICO", "ESTÉTICO, "💆‍♀️")
-
+    renderizar_interface("ESTETICO", "ESTÉTICO", "💆‍♀️")
