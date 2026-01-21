@@ -5,15 +5,16 @@ import plotly.express as px
 from concurrent.futures import ThreadPoolExecutor
 import io
 import re
+from datetime import datetime
 
 # ==========================================
-# 🔐 SUA CHAVE API
-# Pega a chave do cofre de segredos do Streamlit
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"] 
+# 🔐 SUA CHAVE API (Mantenha st.secrets se já configurou)
+# Se estiver rodando local sem segredos, cole a chave aqui.
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 # ==========================================
 
-st.set_page_config(page_title="Contourline Strategic BI", layout="wide")
-st.title("🏛️ Contourline Strategic BI")
+st.set_page_config(page_title="Contourline Chrono BI", layout="wide")
+st.title("🏛️ Contourline: Chrono BI")
 
 with st.sidebar:
     st.header("⚙️ Filtros")
@@ -24,29 +25,49 @@ with st.sidebar:
 # --- ENGENHARIA DE DADOS ---
 
 def limpar_csv_seguro(arquivo):
-    """Lê o CSV garantindo Texto para não quebrar números"""
+    """Lê garantindo texto para não quebrar datas ou números"""
     corpo = arquivo.read().decode('utf-8-sig')
     arquivo.seek(0)
     pular = 1 if corpo.startswith('sep=') else 0
     return pd.read_csv(io.StringIO(corpo), skiprows=pular, sep=None, engine='python', dtype=str).fillna("N/A")
 
 def converter_valor_br(valor_str):
-    """Transforma 1.000,00 em 1000.00"""
     try:
         if pd.isna(valor_str) or valor_str in ["N/A", "nan", ""]: return 0.0
         limpo = str(valor_str).replace('R$', '').strip()
         if ',' in limpo:
             limpo = limpo.replace('.', '').replace(',', '.')
         return float(limpo)
-    except:
-        return 0.0
+    except: return 0.0
 
 def formatar_brl(valor_float):
-    """Devolve 1000.00 para 1.000,00"""
     return f"{valor_float:.2f}".replace('.', ',')
 
+def processar_data(data_str):
+    """Tenta entender datas do RD Station/Excel e converter para objeto Data"""
+    if pd.isna(data_str) or data_str in ["N/A", "nan", ""]: return None
+    
+    formatos = [
+        '%d/%m/%Y', '%d/%m/%Y %H:%M', '%Y-%m-%d', '%Y-%m-%d %H:%M:%S',
+        '%d-%m-%Y', '%m/%d/%Y'
+    ]
+    
+    data_limpa = str(data_str).split('.')[0] # Remove milissegundos se houver
+    
+    for fmt in formatos:
+        try:
+            return datetime.strptime(data_limpa, fmt)
+        except ValueError:
+            continue
+    return None
+
+def calcular_dias(data_obj):
+    if not data_obj: return 9999 # Se não tiver data, joga pro fim da fila
+    delta = datetime.now() - data_obj
+    return delta.days
+
 def extrair_icp(client, df):
-    col_prod = next((c for c in df.columns if any(x in c.lower() for x in ['produto', 'item', 'equipamento'])), None)
+    col_prod = next((c for c in df.columns if any(x in c.lower() for x in ['produto', 'equipamento'])), None)
     produtos_top = ""
     if col_prod:
         top3 = df[col_prod].value_counts().head(3).index.tolist()
@@ -99,24 +120,31 @@ if arq_ganhos and arq_perdas:
     col_motivo = next((c for c in df_l.columns if 'motivo' in c.lower()), "Motivo")
     col_valor = next((c for c in df_l.columns if 'valor' in c.lower()), None)
     col_nome = next((c for c in df_l.columns if any(x in c.lower() for x in ['nome', 'cliente'])), "Lead")
-    col_prod = next((c for c in df_l.columns if any(x in c.lower() for x in ['produto', 'equipamento', 'item', 'tecnologia'])), None)
+    col_prod = next((c for c in df_l.columns if any(x in c.lower() for x in ['produto', 'equipamento', 'item'])), None)
+    col_vend = next((c for c in df_l.columns if any(x in c.lower() for x in ['vendedor', 'responsável', 'owner'])), None)
     
-    # NOVO: Mapeamento de Vendedor
-    col_vend = next((c for c in df_l.columns if any(x in c.lower() for x in ['vendedor', 'responsável', 'responsavel', 'owner', 'proprietário'])), None)
+    # NOVO: Mapeamento de Data (Perda/Fechamento)
+    col_data = next((c for c in df_l.columns if any(x in c.lower() for x in ['fechamento', 'perda', 'closing', 'data fim', 'data ganho'])), None)
 
-    if not col_prod:
-        df_l['Equipamento_Interesse'] = "N/A"
-        col_prod = 'Equipamento_Interesse'
+    # Preenche colunas faltantes
+    if not col_prod: df_l['Equipamento'] = "N/A"; col_prod = 'Equipamento'
+    if not col_vend: df_l['Vendedor'] = "N/A"; col_vend = 'Vendedor'
     
-    if not col_vend:
-        df_l['Vendedor_Resp'] = "N/A"
-        col_vend = 'Vendedor_Resp'
+    # Processamento de Valor
+    if col_valor: df_l['Valor_Calc'] = df_l[col_valor].apply(converter_valor_br)
+    else: df_l['Valor_Calc'] = 0.0
 
-    # Conversão de Valor
-    if col_valor:
-        df_l['Valor_Calc'] = df_l[col_valor].apply(converter_valor_br)
+    # Processamento de DATA (A Mágica da v54)
+    if col_data:
+        # Cria objeto data real
+        df_l['Data_Obj'] = df_l[col_data].apply(processar_data)
+        # Calcula dias passados
+        df_l['Dias_Atras'] = df_l['Data_Obj'].apply(calcular_dias)
+        # Formata bonito para leitura (DD/MM/AAAA)
+        df_l['Data_Formatada'] = df_l['Data_Obj'].apply(lambda x: x.strftime('%d/%m/%Y') if x else "Sem Data")
     else:
-        df_l['Valor_Calc'] = 0.0
+        df_l['Data_Formatada'] = "N/A"
+        df_l['Dias_Atras'] = 9999
 
     # Filtros
     total_bruto = len(df_l)
@@ -126,28 +154,33 @@ if arq_ganhos and arq_perdas:
     else:
         df_limpo = df_l.copy()
         
-    total_limpo = len(df_limpo)
-    removidos = total_bruto - total_limpo
+    removidos = total_bruto - len(df_limpo)
 
     # --- DASHBOARD ---
-    st.markdown("### 🔍 Raio-X Financeiro")
+    st.markdown("### 🔍 Raio-X Financeiro & Temporal")
     k1, k2, k3 = st.columns(3)
-    k1.metric("Total de Leads", total_bruto)
-    k2.metric("Removidos (Lixo)", removidos, delta_color="inverse")
-    k3.metric("Capital Real em Risco", f"R$ {df_limpo['Valor_Calc'].sum():,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
+    k1.metric("Leads Únicos", len(df_limpo))
+    k2.metric("Removidos", removidos, delta_color="inverse")
+    k3.metric("Capital em Risco", f"R$ {df_limpo['Valor_Calc'].sum():,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
 
     g1, g2 = st.columns(2)
     with g1: st.plotly_chart(px.pie(df_limpo, names=col_motivo, title="Motivos (Volume)", hole=0.4), use_container_width=True)
     with g2: 
-        top_fin = df_limpo.groupby(col_motivo)['Valor_Calc'].sum().nlargest(8).reset_index()
-        st.plotly_chart(px.bar(top_fin, y=col_motivo, x='Valor_Calc', orientation='h', title="Gargalos (R$)"), use_container_width=True)
+        # Gráfico Temporal: Perdas por Mês (Se houver data)
+        if col_data and df_limpo['Data_Obj'].notnull().any():
+            df_limpo['Mes_Perda'] = df_limpo['Data_Obj'].apply(lambda x: x.strftime('%Y-%m') if x else 'N/A')
+            temp_data = df_limpo.groupby('Mes_Perda')['Valor_Calc'].sum().reset_index().sort_values('Mes_Perda')
+            st.plotly_chart(px.bar(temp_data, x='Mes_Perda', y='Valor_Calc', title="Evolução de Perdas (Linha do Tempo)"), use_container_width=True)
+        else:
+            top_fin = df_limpo.groupby(col_motivo)['Valor_Calc'].sum().nlargest(8).reset_index()
+            st.plotly_chart(px.bar(top_fin, y=col_motivo, x='Valor_Calc', orientation='h', title="Gargalos (R$)"), use_container_width=True)
 
     # --- IA ---
     st.markdown("---")
-    if st.button("🚀 Iniciar Scoring Completo") or st.session_state.processado:
+    if st.button("🚀 Iniciar Scoring Cronológico") or st.session_state.processado:
         
         if not st.session_state.processado:
-            with st.spinner("Analisando perfil, valores e vendedores..."):
+            with st.spinner("Analisando perfil, datas e valores..."):
                 df_w = limpar_csv_seguro(arq_ganhos)
                 icp = extrair_icp(client, df_w)
                 st.session_state.icp = icp
@@ -155,11 +188,8 @@ if arq_ganhos and arq_perdas:
                 with ThreadPoolExecutor(max_workers=15) as executor:
                     res = list(executor.map(lambda row: pontuar_lead(client, row, icp), df_limpo.to_dict('records')))
                 
-                df_limpo['Score_Pct'] = [r['score'] for r in res]
+                df_limpo['Score_Pct'] = pd.to_numeric([r['score'] for r in res], errors='coerce').fillna(0).clip(0, 100)
                 df_limpo['Justificativa'] = [r['motivo'] for r in res]
-                
-                # Trava de Segurança
-                df_limpo['Score_Pct'] = pd.to_numeric(df_limpo['Score_Pct'], errors='coerce').fillna(0).clip(0, 100)
                 df_limpo['Nota_0_5'] = (df_limpo['Score_Pct'] / 20).round(1)
                 
                 st.session_state.df_final = df_limpo
@@ -174,23 +204,26 @@ if arq_ganhos and arq_perdas:
         
         df_show = df_final[df_final['Score_Pct'] >= min_score].copy()
         
-        # Seleção de Colunas (Agora com Vendedor)
-        cols_show = [col_nome, col_vend, col_prod, col_motivo, 'Valor_Calc', 'Nota_0_5', 'Score_Pct', 'Justificativa']
+        # Seleção de Colunas (Agora com DATA)
+        cols_show = [col_nome, 'Data_Formatada', 'Dias_Atras', col_vend, col_prod, col_motivo, 'Valor_Calc', 'Nota_0_5', 'Score_Pct', 'Justificativa']
         
         df_export = df_show[cols_show].rename(columns={
             col_vend: 'Vendedor',
-            col_prod: 'Equipamento', 
+            col_prod: 'Equipamento',
+            'Data_Formatada': 'Data Perda',
+            'Dias_Atras': 'Dias Passados',
             'Valor_Calc': 'Valor Potencial',
             'Nota_0_5': 'Nota (0-5)',
             'Score_Pct': 'Aderência (%)'
-        }).sort_values(['Nota (0-5)', 'Valor Potencial'], ascending=False)
+        }).sort_values(['Nota (0-5)', 'Dias Passados'], ascending=[False, True]) # Ordena por Nota (Maior) e Data (Mais Recente)
         
         st.dataframe(
             df_export,
             column_config={
                 "Nota (0-5)": st.column_config.NumberColumn(format="⭐ %.1f"),
                 "Aderência (%)": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
-                "Valor Potencial": st.column_config.NumberColumn(format="R$ %.2f")
+                "Valor Potencial": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Dias Passados": st.column_config.NumberColumn(format="%d dias")
             },
             use_container_width=True
         )
@@ -199,10 +232,9 @@ if arq_ganhos and arq_perdas:
         csv_buffer = io.StringIO()
         df_csv = df_export.copy()
         
-        # Formatação BRL Final
+        # Formatação Final para Excel
         df_csv['Valor Potencial'] = df_csv['Valor Potencial'].apply(formatar_brl)
         df_csv['Nota (0-5)'] = df_csv['Nota (0-5)'].apply(lambda x: str(x).replace('.', ','))
         
         df_csv.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8-sig')
-
-        st.download_button("📥 Baixar CSV Completo (Vendedor + Equipamento)", csv_buffer.getvalue(), "bi_vendedor_v53.csv", "text/csv")
+        st.download_button("📥 Baixar CSV Cronológico (V54)", csv_buffer.getvalue(), "bi_chrono_v54.csv", "text/csv")
