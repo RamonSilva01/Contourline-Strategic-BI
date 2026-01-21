@@ -23,7 +23,7 @@ except:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Contourline Dual Intelligence", layout="wide")
-st.title("🏛️ Contourline: Dual Intelligence v66 (Hybrid Brain)")
+st.title("🏛️ Contourline: Dual Intelligence")
 
 # ==========================================
 # ⚙️ FUNÇÕES AUXILIARES
@@ -57,16 +57,6 @@ def converter_valor_br(valor_str):
         return float(limpo)
     except: return 0.0
 
-def processar_data(data_str):
-    if pd.isna(data_str) or str(data_str) in ["N/A", "nan", "-", ""]: return None
-    formatos = ['%d/%m/%Y', '%d/%m/%Y %H:%M', '%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%d-%m-%Y']
-    data_limpa = str(data_str).strip()
-    for fmt in formatos:
-        try: return datetime.strptime(data_limpa, fmt)
-        except ValueError: continue
-    return None
-
-# --- NOVA LÓGICA DE TREINAMENTO (TXT + CSV) ---
 def treinar_ia(client, arquivos, categoria):
     df_total = pd.DataFrame()
     regras_manuais = ""
@@ -74,54 +64,43 @@ def treinar_ia(client, arquivos, categoria):
     
     for arq in arquivos:
         nomes.append(arq.name)
-        
-        # Se for Texto (Instruções Manuais)
         if arq.name.endswith('.txt'):
             conteudo = arq.read().decode('utf-8')
-            regras_manuais += f"\n--- DIRETRIZES ESTRATÉGICAS DO DIRETOR ({arq.name}) ---\n{conteudo}\n"
-            arq.seek(0) # Reseta ponteiro por segurança
-            
-        # Se for CSV (Dados de Vendas)
+            regras_manuais += f"\n--- REGRAS DIRETORIA ({arq.name}) ---\n{conteudo}\n"
+            arq.seek(0)
         else:
             df_temp = limpar_csv_seguro(arq)
             df_total = pd.concat([df_total, df_temp], ignore_index=True)
     
-    # Processa dados se houver CSV
-    amostra_dados = "Nenhum dado de venda fornecido, apenas regras manuais."
+    amostra_dados = "Apenas regras manuais."
     produtos_top = ""
     
     if not df_total.empty:
         col_prod = next((c for c in df_total.columns if any(x in c.lower() for x in ['produto', 'equipamento'])), None)
         col_val = next((c for c in df_total.columns if 'valor' in c.lower()), None)
         
-        produtos_top = f"Top Produtos Vendidos: {df_total[col_prod].value_counts().head(5).index.tolist()}" if col_prod else ""
+        produtos_top = f"Top Produtos: {df_total[col_prod].value_counts().head(5).index.tolist()}" if col_prod else ""
         if col_val: df_total['V'] = df_total[col_val].apply(converter_valor_br)
-        
         amostra_dados = df_total.sort_values('V', ascending=False).head(50).to_dict('records') if col_val else df_total.head(50).to_dict('records')
 
-    # Prompt Híbrido: Dados + Regras do Diretor
     prompt = f"""
-    Atue como Diretor de Inteligência Comercial da Contourline (Linha {categoria}).
+    Atue como Diretor Comercial da Contourline (Linha {categoria}).
     
-    FONTE 1 - DADOS REAIS DE VENDAS (O que aconteceu):
+    DADOS DE VENDAS:
     {amostra_dados}
     {produtos_top}
     
-    FONTE 2 - REGRAS ESTRATÉGICAS E CRITÉRIOS DE EXCLUSÃO (O que DEVE acontecer):
+    REGRAS OBRIGATÓRIAS DO DIRETOR:
     {regras_manuais}
     
     MISSÃO:
-    Crie o Perfil de Cliente Ideal (ICP) definitivo para a linha {categoria}.
-    Combine os padrões encontrados nos dados com as regras manuais obrigatórias.
-    Se houver conflito (ex: dados mostram venda para X, mas regras dizem para ignorar X), OBEDEÇA AS REGRAS MANUAIS.
-    Seja específico sobre quem NÃO atender (Critérios de Desqualificação).
+    Crie o ICP definitivo para {categoria}. Priorize as Regras Manuais em caso de conflito.
     """
-    
     return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content, ", ".join(nomes)
 
 def pontuar_lead(client, row, icp):
     try:
-        prompt = f"ICP DEFINIDO: {icp}. \n\nLEAD PARA ANALISAR: {row}. \n\nTAREFA: Dê uma nota de 0 a 100 de aderência ao ICP. Responda estritamente no formato: NOTA | MOTIVO CURTO."
+        prompt = f"ICP: {icp}. LEAD: {row}. Nota 0-100. Responda: NOTA | MOTIVO CURTO."
         res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content
         parts = res.split('|')
         score_str = re.findall(r'\d+', parts[0])
@@ -149,18 +128,16 @@ def renderizar_interface(cat_cod, cat_nome):
     
     if perfil:
         st.success(f"Cérebro {cat_nome} Ativo (Atualizado: {pd.to_datetime(data).strftime('%d/%m')})")
-        with st.expander("Ver Definição do ICP"): st.write(perfil)
+        with st.expander("Ver ICP"): st.write(perfil)
     else:
         st.warning(f"Cérebro {cat_nome} Vazio.")
 
-    # MUDANÇA: Aceita CSV e TXT agora
-    with st.expander(f"📚 Ensinar/Atualizar {cat_nome}", expanded=not perfil):
-        st.info("Você pode subir **CSVs de vendas** E/OU arquivos **.txt com regras manuais**.")
-        arqs = st.file_uploader(f"Arquivos de Treino {cat_nome}", type=["csv", "txt"], accept_multiple_files=True, key=f"up_{cat_cod}")
-        
-        if arqs and st.button(f"Processar Inteligência ({cat_cod})"):
+    with st.expander(f"📚 Ensinar {cat_nome}", expanded=not perfil):
+        st.info("Aceita .CSV (Vendas) e .TXT (Regras).")
+        arqs = st.file_uploader(f"Arquivos {cat_nome}", type=["csv", "txt"], accept_multiple_files=True, key=f"up_{cat_cod}")
+        if arqs and st.button(f"Processar ({cat_cod})"):
             client = OpenAI(api_key=OPENAI_API_KEY)
-            with st.spinner("Lendo dados e regras manuais..."):
+            with st.spinner("Lendo dados..."):
                 novo, nomes = treinar_ia(client, arqs, cat_nome)
                 if salvar_perfil(novo, cat_cod, nomes): st.rerun()
 
@@ -173,30 +150,34 @@ def renderizar_interface(cat_cod, cat_nome):
         client = OpenAI(api_key=OPENAI_API_KEY)
         if f'run_{cat_cod}' not in st.session_state: st.session_state[f'run_{cat_cod}'] = False
         
-        # Leitura Segura
+        # LEITURA
         df_l = limpar_csv_seguro(arquivo_perdas)
         cols = df_l.columns
         
-        # Mapeamento
+        # MAPEAMENTO
         c_motivo = next((c for c in cols if 'motivo' in c.lower()), None)
         c_val = next((c for c in cols if 'valor' in c.lower()), None)
         c_nome = next((c for c in cols if any(x in c.lower() for x in ['nome', 'cliente', 'lead'])), cols[0])
         c_vend = next((c for c in cols if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
-        c_data = next((c for c in cols if any(x in c.lower() for x in ['data', 'date', 'criado', 'created', 'perda', 'fechamento'])), None)
+        
+        # --- FIX DA DATA: PROCURA MAIS AMPLA ---
+        # Tenta achar colunas que tenham 'data', 'date', 'criado', 'fechamento', 'perda'
+        c_data = next((c for c in cols if any(x in c.lower() for x in ['fechamento', 'perda', 'data', 'date', 'created'])), None)
         
         if not c_vend: df_l['Vend'] = "N/A"; c_vend = 'Vend'
         
-        # Conversão
+        # VALOR E DATA
         df_l['Valor_Real'] = df_l[c_val].apply(converter_valor_br) if c_val else 0.0
         
-        # Data
+        # --- AQUI ESTÁ A CORREÇÃO DE DATA ---
         if c_data:
-            df_l['Data_Obj'] = df_l[c_data].apply(processar_data)
-            df_l['Data_Formatada'] = df_l['Data_Obj'].apply(lambda x: x.strftime('%d/%m/%Y') if x else "-")
+            # pd.to_datetime é mágico: entende ISO, BR, US, tudo misturado
+            df_l['Data_Obj'] = pd.to_datetime(df_l[c_data], dayfirst=True, errors='coerce')
+            df_l['Data_Formatada'] = df_l['Data_Obj'].dt.strftime('%d/%m/%Y').fillna("-")
         else:
             df_l['Data_Formatada'] = "-"
 
-        # Filtro Duplicidade
+        # FILTROS
         df_limpo = df_l.copy()
         removidos = 0
         if filtrar_duplicados and c_motivo:
@@ -204,11 +185,10 @@ def renderizar_interface(cat_cod, cat_nome):
             df_limpo = df_l[~mask].copy()
             removidos = len(df_l) - len(df_limpo)
         
-        # Rotação
         lista_vends = df_limpo[c_vend].dropna().unique().tolist()
         df_limpo['Novo Dono'] = df_limpo[c_vend].apply(lambda x: sugerir_novo_dono(x, lista_vends))
 
-        # Dashboard
+        # DASHBOARD
         k1, k2, k3 = st.columns(3)
         k1.metric("Leads Reais", len(df_limpo))
         k2.metric("Lixo Removido", removidos)
@@ -221,10 +201,10 @@ def renderizar_interface(cat_cod, cat_nome):
                 top = df_limpo.groupby(c_motivo)['Valor_Real'].sum().nlargest(8).reset_index()
                 st.plotly_chart(px.bar(top, y=c_motivo, x='Valor_Real', orientation='h', title="Gargalos Financeiros"), use_container_width=True)
         
-        # IA Analysis
+        # IA
         if st.button(f"🚀 Analisar ({cat_nome})") or st.session_state[f'run_{cat_cod}']:
             if not st.session_state[f'run_{cat_cod}']:
-                with st.spinner("Aplicando regras do Diretor e Dados Históricos..."):
+                with st.spinner("IA Analisando..."):
                     with ThreadPoolExecutor(max_workers=10) as exe:
                         res = list(exe.map(lambda r: pontuar_lead(client, r, perfil), df_limpo.to_dict('records')))
                     
@@ -240,7 +220,7 @@ def renderizar_interface(cat_cod, cat_nome):
             final = st.session_state[f'data_{cat_cod}']
             show = final[final['Score'] >= min_score].copy()
             
-            # Tabela
+            # TABELA
             cols_base = [c_nome, 'Novo Dono', c_vend, 'Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa']
             if c_motivo: cols_base.insert(3, c_motivo)
             cols_final = [c for c in cols_base if c in show.columns]
@@ -248,10 +228,10 @@ def renderizar_interface(cat_cod, cat_nome):
             st.dataframe(show[cols_final].sort_values('Nota', ascending=False), column_config={
                 "Nota": st.column_config.NumberColumn(format="⭐ %.1f"),
                 "Valor_Real": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Data_Formatada": st.column_config.TextColumn("Data Fechamento")
+                "Data_Formatada": st.column_config.TextColumn("Data")
             }, use_container_width=True)
             
-            # Excel BR
+            # EXCEL BRASIL
             df_export = show[cols_final].copy()
             df_export['Nota'] = df_export['Nota'].apply(lambda x: str(x).replace('.', ','))
             df_export['Valor_Real'] = df_export['Valor_Real'].apply(lambda x: f"{x:.2f}".replace('.', ','))
