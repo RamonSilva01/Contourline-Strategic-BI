@@ -23,7 +23,7 @@ except:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Contourline Dual Intelligence", layout="wide")
-st.title("🏛️ Contourline: Dual Intelligence")
+st.title("🏛️ Contourline: Dual Intelligence v66 (Hybrid Brain)")
 
 # ==========================================
 # ⚙️ FUNÇÕES AUXILIARES
@@ -58,43 +58,70 @@ def converter_valor_br(valor_str):
     except: return 0.0
 
 def processar_data(data_str):
-    """Lê datas do RD Station/Excel (Prioriza Dia/Mes/Ano)"""
     if pd.isna(data_str) or str(data_str) in ["N/A", "nan", "-", ""]: return None
-    # Lista de formatos comuns no Brasil
-    formatos = [
-        '%d/%m/%Y',          # 25/12/2025
-        '%d/%m/%Y %H:%M',    # 25/12/2025 14:30
-        '%d/%m/%Y %H:%M:%S', # 25/12/2025 14:30:00
-        '%Y-%m-%d',          # 2025-12-25
-        '%d-%m-%Y'           # 25-12-2025
-    ]
+    formatos = ['%d/%m/%Y', '%d/%m/%Y %H:%M', '%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%d-%m-%Y']
     data_limpa = str(data_str).strip()
     for fmt in formatos:
         try: return datetime.strptime(data_limpa, fmt)
         except ValueError: continue
     return None
 
+# --- NOVA LÓGICA DE TREINAMENTO (TXT + CSV) ---
 def treinar_ia(client, arquivos, categoria):
     df_total = pd.DataFrame()
+    regras_manuais = ""
     nomes = []
+    
     for arq in arquivos:
-        df_total = pd.concat([df_total, limpar_csv_seguro(arq)], ignore_index=True)
         nomes.append(arq.name)
+        
+        # Se for Texto (Instruções Manuais)
+        if arq.name.endswith('.txt'):
+            conteudo = arq.read().decode('utf-8')
+            regras_manuais += f"\n--- DIRETRIZES ESTRATÉGICAS DO DIRETOR ({arq.name}) ---\n{conteudo}\n"
+            arq.seek(0) # Reseta ponteiro por segurança
+            
+        # Se for CSV (Dados de Vendas)
+        else:
+            df_temp = limpar_csv_seguro(arq)
+            df_total = pd.concat([df_total, df_temp], ignore_index=True)
     
-    col_prod = next((c for c in df_total.columns if any(x in c.lower() for x in ['produto', 'equipamento'])), None)
-    col_val = next((c for c in df_total.columns if 'valor' in c.lower()), None)
+    # Processa dados se houver CSV
+    amostra_dados = "Nenhum dado de venda fornecido, apenas regras manuais."
+    produtos_top = ""
     
-    produtos_top = f"Top Produtos: {df_total[col_prod].value_counts().head(5).index.tolist()}" if col_prod else ""
-    if col_val: df_total['V'] = df_total[col_val].apply(converter_valor_br)
+    if not df_total.empty:
+        col_prod = next((c for c in df_total.columns if any(x in c.lower() for x in ['produto', 'equipamento'])), None)
+        col_val = next((c for c in df_total.columns if 'valor' in c.lower()), None)
+        
+        produtos_top = f"Top Produtos Vendidos: {df_total[col_prod].value_counts().head(5).index.tolist()}" if col_prod else ""
+        if col_val: df_total['V'] = df_total[col_val].apply(converter_valor_br)
+        
+        amostra_dados = df_total.sort_values('V', ascending=False).head(50).to_dict('records') if col_val else df_total.head(50).to_dict('records')
+
+    # Prompt Híbrido: Dados + Regras do Diretor
+    prompt = f"""
+    Atue como Diretor de Inteligência Comercial da Contourline (Linha {categoria}).
     
-    amostra = df_total.sort_values('V', ascending=False).head(40).to_dict('records') if col_val else df_total.head(40).to_dict('records')
+    FONTE 1 - DADOS REAIS DE VENDAS (O que aconteceu):
+    {amostra_dados}
+    {produtos_top}
     
-    prompt = f"Analise vendas {categoria} da Contourline: {amostra}. {produtos_top}. Crie um ICP robusto."
+    FONTE 2 - REGRAS ESTRATÉGICAS E CRITÉRIOS DE EXCLUSÃO (O que DEVE acontecer):
+    {regras_manuais}
+    
+    MISSÃO:
+    Crie o Perfil de Cliente Ideal (ICP) definitivo para a linha {categoria}.
+    Combine os padrões encontrados nos dados com as regras manuais obrigatórias.
+    Se houver conflito (ex: dados mostram venda para X, mas regras dizem para ignorar X), OBEDEÇA AS REGRAS MANUAIS.
+    Seja específico sobre quem NÃO atender (Critérios de Desqualificação).
+    """
+    
     return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content, ", ".join(nomes)
 
 def pontuar_lead(client, row, icp):
     try:
-        prompt = f"ICP: {icp}. LEAD: {row}. Nota 0-100. Responda: NOTA | MOTIVO."
+        prompt = f"ICP DEFINIDO: {icp}. \n\nLEAD PARA ANALISAR: {row}. \n\nTAREFA: Dê uma nota de 0 a 100 de aderência ao ICP. Responda estritamente no formato: NOTA | MOTIVO CURTO."
         res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content
         parts = res.split('|')
         score_str = re.findall(r'\d+', parts[0])
@@ -122,15 +149,18 @@ def renderizar_interface(cat_cod, cat_nome):
     
     if perfil:
         st.success(f"Cérebro {cat_nome} Ativo (Atualizado: {pd.to_datetime(data).strftime('%d/%m')})")
-        with st.expander("Ver Perfil ICP"): st.write(perfil)
+        with st.expander("Ver Definição do ICP"): st.write(perfil)
     else:
         st.warning(f"Cérebro {cat_nome} Vazio.")
 
-    with st.expander(f"📚 Treinar {cat_nome}", expanded=not perfil):
-        arqs = st.file_uploader(f"Vendas {cat_nome}", type="csv", accept_multiple_files=True, key=f"up_{cat_cod}")
-        if arqs and st.button(f"Treinar ({cat_cod})"):
+    # MUDANÇA: Aceita CSV e TXT agora
+    with st.expander(f"📚 Ensinar/Atualizar {cat_nome}", expanded=not perfil):
+        st.info("Você pode subir **CSVs de vendas** E/OU arquivos **.txt com regras manuais**.")
+        arqs = st.file_uploader(f"Arquivos de Treino {cat_nome}", type=["csv", "txt"], accept_multiple_files=True, key=f"up_{cat_cod}")
+        
+        if arqs and st.button(f"Processar Inteligência ({cat_cod})"):
             client = OpenAI(api_key=OPENAI_API_KEY)
-            with st.spinner("Treinando..."):
+            with st.spinner("Lendo dados e regras manuais..."):
                 novo, nomes = treinar_ia(client, arqs, cat_nome)
                 if salvar_perfil(novo, cat_cod, nomes): st.rerun()
 
@@ -143,37 +173,30 @@ def renderizar_interface(cat_cod, cat_nome):
         client = OpenAI(api_key=OPENAI_API_KEY)
         if f'run_{cat_cod}' not in st.session_state: st.session_state[f'run_{cat_cod}'] = False
         
-        # --- ENGENHARIA DE DADOS ---
+        # Leitura Segura
         df_l = limpar_csv_seguro(arquivo_perdas)
         cols = df_l.columns
         
-        # 1. MAPEAMENTO DE COLUNAS (PRIORIDADE NO FECHAMENTO)
+        # Mapeamento
         c_motivo = next((c for c in cols if 'motivo' in c.lower()), None)
         c_val = next((c for c in cols if 'valor' in c.lower()), None)
         c_nome = next((c for c in cols if any(x in c.lower() for x in ['nome', 'cliente', 'lead'])), cols[0])
         c_vend = next((c for c in cols if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
-        
-        # Lógica de Data: Busca EXATA por fechamento primeiro
-        c_data = next((c for c in cols if 'fechamento' in c.lower()), None)
-        # Se não achar fechamento, tenta perda
-        if not c_data: c_data = next((c for c in cols if 'perda' in c.lower()), None)
-        # Se não achar, tenta genérico
-        if not c_data: c_data = next((c for c in cols if 'data' in c.lower()), None)
+        c_data = next((c for c in cols if any(x in c.lower() for x in ['data', 'date', 'criado', 'created', 'perda', 'fechamento'])), None)
         
         if not c_vend: df_l['Vend'] = "N/A"; c_vend = 'Vend'
         
-        # 2. CONVERSÃO
+        # Conversão
         df_l['Valor_Real'] = df_l[c_val].apply(converter_valor_br) if c_val else 0.0
         
-        # Tratamento da Data
+        # Data
         if c_data:
-            # Aplica o processador e formata só se tiver data válida
             df_l['Data_Obj'] = df_l[c_data].apply(processar_data)
             df_l['Data_Formatada'] = df_l['Data_Obj'].apply(lambda x: x.strftime('%d/%m/%Y') if x else "-")
         else:
             df_l['Data_Formatada'] = "-"
 
-        # 3. FILTROS
+        # Filtro Duplicidade
         df_limpo = df_l.copy()
         removidos = 0
         if filtrar_duplicados and c_motivo:
@@ -181,10 +204,11 @@ def renderizar_interface(cat_cod, cat_nome):
             df_limpo = df_l[~mask].copy()
             removidos = len(df_l) - len(df_limpo)
         
+        # Rotação
         lista_vends = df_limpo[c_vend].dropna().unique().tolist()
         df_limpo['Novo Dono'] = df_limpo[c_vend].apply(lambda x: sugerir_novo_dono(x, lista_vends))
 
-        # --- DASHBOARD ---
+        # Dashboard
         k1, k2, k3 = st.columns(3)
         k1.metric("Leads Reais", len(df_limpo))
         k2.metric("Lixo Removido", removidos)
@@ -197,10 +221,10 @@ def renderizar_interface(cat_cod, cat_nome):
                 top = df_limpo.groupby(c_motivo)['Valor_Real'].sum().nlargest(8).reset_index()
                 st.plotly_chart(px.bar(top, y=c_motivo, x='Valor_Real', orientation='h', title="Gargalos Financeiros"), use_container_width=True)
         
-        # --- IA ---
+        # IA Analysis
         if st.button(f"🚀 Analisar ({cat_nome})") or st.session_state[f'run_{cat_cod}']:
             if not st.session_state[f'run_{cat_cod}']:
-                with st.spinner("IA Analisando..."):
+                with st.spinner("Aplicando regras do Diretor e Dados Históricos..."):
                     with ThreadPoolExecutor(max_workers=10) as exe:
                         res = list(exe.map(lambda r: pontuar_lead(client, r, perfil), df_limpo.to_dict('records')))
                     
@@ -216,12 +240,9 @@ def renderizar_interface(cat_cod, cat_nome):
             final = st.session_state[f'data_{cat_cod}']
             show = final[final['Score'] >= min_score].copy()
             
-            # --- TABELA FINAL ---
-            # Define colunas garantindo que Data_Formatada existe
+            # Tabela
             cols_base = [c_nome, 'Novo Dono', c_vend, 'Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa']
             if c_motivo: cols_base.insert(3, c_motivo)
-            
-            # Filtra apenas colunas que realmente existem no dataframe (evita KeyError)
             cols_final = [c for c in cols_base if c in show.columns]
 
             st.dataframe(show[cols_final].sort_values('Nota', ascending=False), column_config={
@@ -230,7 +251,7 @@ def renderizar_interface(cat_cod, cat_nome):
                 "Data_Formatada": st.column_config.TextColumn("Data Fechamento")
             }, use_container_width=True)
             
-            # --- EXPORTAÇÃO EXCEL (FIX FINAL) ---
+            # Excel BR
             df_export = show[cols_final].copy()
             df_export['Nota'] = df_export['Nota'].apply(lambda x: str(x).replace('.', ','))
             df_export['Valor_Real'] = df_export['Valor_Real'].apply(lambda x: f"{x:.2f}".replace('.', ','))
