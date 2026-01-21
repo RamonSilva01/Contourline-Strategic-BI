@@ -17,16 +17,16 @@ try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 except:
-    st.error("⚠️ Erro: Configure as chaves nos Segredos do Streamlit.")
+    st.error("⚠️ Erro Crítico: Configure as chaves nos Segredos do Streamlit.")
     st.stop()
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Contourline Dual Intelligence", layout="wide")
-st.title("🏛️ Contourline: Dual Intelligence")
+st.title("🏛️ Contourline: Dual Intelligence v64")
 
 # ==========================================
-# ⚙️ FUNÇÕES AUXILIARES (AJUSTADAS)
+# ⚙️ FUNÇÕES AUXILIARES
 # ==========================================
 
 def buscar_perfil_por_categoria(categoria):
@@ -43,40 +43,29 @@ def salvar_perfil(texto, categoria, nome_arquivo):
     except: return False
 
 def limpar_csv_seguro(arquivo):
-    """Lê tratando a linha sep= do RD Station/Excel"""
+    """Lê CSV lidando com a linha chata 'sep=' do RD Station"""
     corpo = arquivo.read().decode('utf-8-sig')
     arquivo.seek(0)
+    # Detecta se a primeira linha é lixo técnico
     pular = 1 if corpo.startswith('sep=') else 0
     return pd.read_csv(io.StringIO(corpo), skiprows=pular, sep=None, engine='python', dtype=str).fillna("N/A")
 
 def converter_valor_br(valor_str):
-    """
-    Corrige o erro de 400mil virar 4milhões.
-    Remove apenas os pontos de milhar e troca vírgula por ponto.
-    """
+    """Converte R$ 1.000,00 para float 1000.00"""
     try:
         if pd.isna(valor_str) or str(valor_str).strip() in ["N/A", "nan", ""]: return 0.0
-        # Limpa R$ e espaços
         limpo = str(valor_str).replace('R$', '').strip()
-        
-        # Lógica rigorosa BR: Se tem vírgula, assume que é decimal
-        if ',' in limpo:
-            limpo = limpo.replace('.', '') # Remove ponto de milhar (4.000 -> 4000)
-            limpo = limpo.replace(',', '.') # Troca vírgula por ponto (4000,00 -> 4000.00)
-        
+        if ',' in limpo: 
+            # Remove ponto de milhar e troca vírgula por ponto decimal
+            limpo = limpo.replace('.', '').replace(',', '.')
         return float(limpo)
     except: return 0.0
 
-def formatar_para_excel(valor):
-    """Transforma 3.5 em '3,5' para o Excel brasileiro não ler errado"""
-    if pd.isna(valor): return ""
-    return str(valor).replace('.', ',')
-
 def processar_data(data_str):
-    """Tenta ler a data em vários formatos"""
+    """Padroniza datas"""
     if pd.isna(data_str) or str(data_str) in ["N/A", "nan", ""]: return None
     formatos = ['%d/%m/%Y', '%d/%m/%Y %H:%M', '%Y-%m-%d', '%Y-%m-%d %H:%M:%S']
-    data_limpa = str(data_str).split('.')[0] # Remove milisegundos
+    data_limpa = str(data_str).split('.')[0]
     for fmt in formatos:
         try: return datetime.strptime(data_limpa, fmt)
         except ValueError: continue
@@ -128,12 +117,14 @@ tab_med, tab_estetico = st.tabs(["🏥 UNIVERSO MED", "💆‍♀️ UNIVERSO ES
 def renderizar_interface(cat_cod, cat_nome):
     perfil, data = buscar_perfil_por_categoria(cat_cod)
     
+    # 1. Status do Cérebro
     if perfil:
         st.success(f"Cérebro {cat_nome} Ativo (Atualizado: {pd.to_datetime(data).strftime('%d/%m')})")
         with st.expander("Ver Perfil ICP"): st.write(perfil)
     else:
         st.warning(f"Cérebro {cat_nome} Vazio.")
 
+    # 2. Área de Treino
     with st.expander(f"📚 Treinar {cat_nome}", expanded=not perfil):
         arqs = st.file_uploader(f"Vendas {cat_nome}", type="csv", accept_multiple_files=True, key=f"up_{cat_cod}")
         if arqs and st.button(f"Treinar ({cat_cod})"):
@@ -151,44 +142,46 @@ def renderizar_interface(cat_cod, cat_nome):
         client = OpenAI(api_key=OPENAI_API_KEY)
         if f'run_{cat_cod}' not in st.session_state: st.session_state[f'run_{cat_cod}'] = False
         
-        # 1. Leitura
+        # --- ENGENHARIA DE DADOS ---
+        # Leitura Segura
         df_l = limpar_csv_seguro(arquivo_perdas)
         cols = df_l.columns
         
-        # 2. Mapeamento Automático
+        # Mapeamento Inteligente (Acha as colunas independente do nome exato)
         c_motivo = next((c for c in cols if 'motivo' in c.lower()), None)
         c_val = next((c for c in cols if 'valor' in c.lower()), None)
         c_nome = next((c for c in cols if any(x in c.lower() for x in ['nome', 'cliente', 'lead'])), cols[0])
         c_vend = next((c for c in cols if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
-        # NOVO: Mapeamento de Data
+        # Busca Coluna de Data
         c_data = next((c for c in cols if any(x in c.lower() for x in ['data', 'date', 'criado', 'created', 'perda', 'fechamento'])), None)
         
         if not c_vend: df_l['Vend'] = "N/A"; c_vend = 'Vend'
         
-        # 3. Tratamento de Dados
+        # Conversão de Valor
         df_l['Valor_Real'] = df_l[c_val].apply(converter_valor_br) if c_val else 0.0
         
-        # Tratamento da Data (NOVO)
+        # Tratamento da Data
         if c_data:
             df_l['Data_Formatada'] = df_l[c_data].apply(processar_data).apply(lambda x: x.strftime('%d/%m/%Y') if x else "-")
         else:
             df_l['Data_Formatada'] = "-"
 
-        # 4. Filtro de Duplicidade
+        # Filtro de Duplicidade
         df_limpo = df_l.copy()
         removidos = 0
         if filtrar_duplicados and c_motivo:
-            mask = df_l[c_motivo].astype(str).str.contains(r'dupli|teste|cliente|repetido|já comprei', case=False, regex=True)
+            # Remove testes, duplicados e clientes já convertidos
+            mask = df_l[c_motivo].astype(str).str.contains(r'dupli|teste|cliente|repetido|já comprei|ganho', case=False, regex=True)
             df_limpo = df_l[~mask].copy()
             removidos = len(df_l) - len(df_limpo)
         
-        # Rotação
+        # Rotação de Vendedores
         lista_vends = df_limpo[c_vend].dropna().unique().tolist()
         df_limpo['Novo Dono'] = df_limpo[c_vend].apply(lambda x: sugerir_novo_dono(x, lista_vends))
 
-        # 5. Dashboard
+        # --- DASHBOARD ---
         k1, k2, k3 = st.columns(3)
-        k1.metric("Leads", len(df_limpo))
+        k1.metric("Leads Reais", len(df_limpo))
         k2.metric("Lixo Removido", removidos)
         k3.metric("Risco Financeiro", f"R$ {df_limpo['Valor_Real'].sum():,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
 
@@ -199,16 +192,17 @@ def renderizar_interface(cat_cod, cat_nome):
                 top = df_limpo.groupby(c_motivo)['Valor_Real'].sum().nlargest(8).reset_index()
                 st.plotly_chart(px.bar(top, y=c_motivo, x='Valor_Real', orientation='h', title="Gargalos Financeiros"), use_container_width=True)
         
-        # 6. IA Analysis
+        # --- BOTÃO DE AÇÃO ---
         if st.button(f"🚀 Analisar ({cat_nome})") or st.session_state[f'run_{cat_cod}']:
             if not st.session_state[f'run_{cat_cod}']:
-                with st.spinner("IA Analisando..."):
+                with st.spinner("IA Analisando cada lead..."):
                     with ThreadPoolExecutor(max_workers=10) as exe:
                         res = list(exe.map(lambda r: pontuar_lead(client, r, perfil), df_limpo.to_dict('records')))
                     
                     df_limpo['Score'] = [r['score'] for r in res]
                     df_limpo['Justificativa'] = [r['motivo'] for r in res]
                     
+                    # Cálculo seguro da nota
                     s_score = pd.to_numeric(df_limpo['Score'], errors='coerce').fillna(0).clip(0, 100)
                     df_limpo['Nota'] = (s_score/20).round(1)
                     
@@ -216,25 +210,28 @@ def renderizar_interface(cat_cod, cat_nome):
                     st.session_state[f'run_{cat_cod}'] = True
                     st.rerun()
 
+            # --- RESULTADOS FINAIS ---
             final = st.session_state[f'data_{cat_cod}']
             show = final[final['Score'] >= min_score].copy()
             
-            # Montagem da Tabela Final
+            # Montagem da Tabela para visualização na tela
             cols = [c_nome, 'Novo Dono', c_vend, 'Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa']
             if c_motivo: cols.insert(3, c_motivo)
             
-            # Exibição (Streamlit usa ponto normal)
+            # Exibe na tela (Streamlit cuida da formatação visual)
             st.dataframe(show[cols].sort_values('Nota', ascending=False), column_config={
                 "Nota": st.column_config.NumberColumn(format="⭐ %.1f"),
-                "Valor_Real": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Data_Formatada": st.column_config.TextColumn("Data Perda")
+                "Score": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
+                "Valor_Real": st.column_config.NumberColumn(format="R$ %.2f")
             }, use_container_width=True)
             
-            # --- PREPARAÇÃO PARA EXCEL (AQUI É A MÁGICA) ---
+            # --- EXPORTAÇÃO CORRIGIDA PARA EXCEL BRASIL ---
             df_export = show[cols].copy()
             
-            # Força vírgula para o Excel entender como número decimal no Brasil
-            df_export['Nota'] = df_export['Nota'].apply(formatar_para_excel)
+            # Truque: Transforma Nota 3.5 em String "3,5" para o Excel brasileiro não ler como 35
+            df_export['Nota'] = df_export['Nota'].apply(lambda x: str(x).replace('.', ','))
+            
+            # Truque: Transforma Valor em String "1.000,00"
             df_export['Valor_Real'] = df_export['Valor_Real'].apply(lambda x: f"{x:.2f}".replace('.', ','))
             
             csv = df_export.to_csv(sep=';', index=False, encoding='utf-8-sig')
