@@ -3,3 +3,4 @@ openai
 pandas
 plotly
 openpyxl
+supabase
