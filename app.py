@@ -23,7 +23,7 @@ except:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Contourline Dual Intelligence", layout="wide")
-st.title("🏛️ Contourline: Intelligence")
+st.title("🏛️ Contourline:Intelligence")
 
 # ==========================================
 # ⚙️ FUNÇÕES AUXILIARES
@@ -146,36 +146,32 @@ def renderizar_interface(cat_cod, cat_nome):
         client = OpenAI(api_key=OPENAI_API_KEY)
         if f'run_{cat_cod}' not in st.session_state: st.session_state[f'run_{cat_cod}'] = False
         
-        # Leitura Segura
+        # Leitura
         df_l = limpar_csv_seguro(arquivo_perdas)
         cols = df_l.columns
         
-        # --- MAPEAMENTO AUTOMÁTICO SNIPER ---
-        
-        # 1. Motivo (Prioridade Absoluta)
+        # --- MAPEAMENTO COMPLETO ---
+        # 1. Motivo
         c_motivo = next((c for c in cols if 'motivo' in c.lower()), None)
-        
         # 2. Valor
         c_val = next((c for c in cols if 'valor' in c.lower()), None)
-        
-        # 3. Data (SNIPER: Procura exata primeiro)
-        # Tenta achar exatamente "Data de fechamento" (case insensitive)
+        # 3. Equipamento (RESTAURADO)
+        c_prod = next((c for c in cols if any(x in c.lower() for x in ['produto', 'equipamento', 'item'])), None)
+        # 4. Data (Sniper)
         c_data = next((c for c in cols if 'data de fechamento' in c.lower()), None)
-        # Se não achar, tenta "fechamento"
         if not c_data: c_data = next((c for c in cols if 'fechamento' in c.lower()), None)
-        # Se não achar, tenta "perda" (mas cuidado pra não pegar Motivo de Perda)
         if not c_data: c_data = next((c for c in cols if 'perda' in c.lower() and 'motivo' not in c.lower()), None)
         
-        # 4. Outros
+        # 5. Pessoas
         c_nome = next((c for c in cols if any(x in c.lower() for x in ['nome', 'cliente', 'lead'])), cols[0])
         c_vend = next((c for c in cols if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
         if not c_vend: df_l['Vend'] = "N/A"; c_vend = 'Vend'
         
         # --- PROCESSAMENTO ---
-        # Conversão Valor
+        # Valor
         df_l['Valor_Real'] = df_l[c_val].apply(converter_valor_br) if c_val else 0.0
         
-        # Conversão Data (Blindada)
+        # Data
         if c_data:
             df_l[c_data] = df_l[c_data].astype(str).str.strip()
             df_l['Data_Obj'] = pd.to_datetime(df_l[c_data], dayfirst=True, errors='coerce')
@@ -183,7 +179,7 @@ def renderizar_interface(cat_cod, cat_nome):
         else:
             df_l['Data_Formatada'] = "-"
 
-        # Filtros
+        # Filtro Duplicidade
         df_limpo = df_l.copy()
         removidos = 0
         if filtrar_duplicados and c_motivo:
@@ -226,23 +222,33 @@ def renderizar_interface(cat_cod, cat_nome):
             final = st.session_state[f'data_{cat_cod}']
             show = final[final['Score'] >= min_score].copy()
             
-            # --- TABELA FINAL (GARANTINDO TODOS OS CAMPOS) ---
-            # Define as colunas que queremos ver
-            cols_desejadas = [c_nome, 'Novo Dono', c_vend, 'Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa']
-            # Adiciona Motivo Original se existir
-            if c_motivo: cols_desejadas.insert(3, c_motivo)
+            # --- TABELA FINAL COMPLETA (ORDEM CORRETA) ---
+            # 1. Dados do Cliente
+            cols_finais = [c_nome]
             
-            # Filtra apenas o que realmente existe no dataframe
-            cols_final = [c for c in cols_desejadas if c in show.columns]
+            # 2. Donos
+            cols_finais.extend(['Novo Dono', c_vend])
+            
+            # 3. Equipamento (Se existir)
+            if c_prod: cols_finais.append(c_prod)
+            
+            # 4. Motivo (Se existir)
+            if c_motivo: cols_finais.append(c_motivo)
+            
+            # 5. Dados Financeiros e IA
+            cols_finais.extend(['Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa'])
+            
+            # Filtro de segurança (só pega o que existe)
+            cols_finais = [c for c in cols_finais if c in show.columns]
 
-            st.dataframe(show[cols_final].sort_values('Nota', ascending=False), column_config={
+            st.dataframe(show[cols_finais].sort_values('Nota', ascending=False), column_config={
                 "Nota": st.column_config.NumberColumn(format="⭐ %.1f"),
                 "Valor_Real": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Data_Formatada": st.column_config.TextColumn("Data Fechamento")
             }, use_container_width=True)
             
             # EXCEL
-            df_export = show[cols_final].copy()
+            df_export = show[cols_finais].copy()
             df_export['Nota'] = df_export['Nota'].apply(lambda x: str(x).replace('.', ','))
             df_export['Valor_Real'] = df_export['Valor_Real'].apply(lambda x: f"{x:.2f}".replace('.', ','))
             
