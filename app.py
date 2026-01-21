@@ -23,17 +23,7 @@ except:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Contourline Dual Intelligence", layout="wide")
-st.title("🏛️ Contourline: Dual Intelligence v61")
-
-# ==========================================
-# ⚙️ CONFIGURAÇÕES GLOBAIS
-# ==========================================
-with st.sidebar:
-    st.header("⚙️ Filtros")
-    st.info("Aplicam-se às abas MED e ESTÉTICO.")
-    filtrar_duplicados = st.checkbox("Remover Duplicidade/Testes", value=True)
-    st.markdown("---")
-    min_score = st.slider("Régua de Aderência Mínima (%):", 0, 100, 30)
+st.title("🏛️ Contourline: Dual Intelligence v62")
 
 # ==========================================
 # ⚙️ FUNÇÕES DE BANCO DE DADOS
@@ -52,17 +42,29 @@ def salvar_perfil(texto, categoria, nome_arquivo):
     except: return False
 
 # ==========================================
-# 🛠️ FUNÇÕES DE ENGENHARIA
+# 🛠️ FUNÇÕES DE ENGENHARIA (O FIX ESTÁ AQUI)
 # ==========================================
+
 def limpar_csv_seguro(arquivo):
+    """
+    Lê o CSV tratando a linha 'sep=' que quebrava o sistema.
+    """
     corpo = arquivo.read().decode('utf-8-sig')
-    return pd.read_csv(io.StringIO(corpo), sep=None, engine='python', dtype=str).fillna("N/A")
+    arquivo.seek(0) # Reseta o ponteiro
+    
+    # Verifica se a primeira linha é de definição de separador (comum em Excel/RD)
+    pular = 1 if corpo.startswith('sep=') else 0
+    
+    # Lê pulando a linha chata se necessário
+    return pd.read_csv(io.StringIO(corpo), skiprows=pular, sep=None, engine='python', dtype=str).fillna("N/A")
 
 def converter_valor_br(valor_str):
     try:
         if pd.isna(valor_str) or str(valor_str).strip() in ["N/A", "nan", ""]: return 0.0
         limpo = str(valor_str).replace('R$', '').strip()
-        if ',' in limpo: limpo = limpo.replace('.', '').replace(',', '.')
+        # Lógica inteligente para BRL (1.000,00) vs USD (1,000.00)
+        if ',' in limpo: 
+            limpo = limpo.replace('.', '').replace(',', '.')
         return float(limpo)
     except: return 0.0
 
@@ -89,7 +91,8 @@ def pontuar_lead(client, row, icp):
         prompt = f"ICP: {icp}. LEAD: {row}. Nota 0-100. Responda: NOTA | MOTIVO."
         res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content
         parts = res.split('|')
-        score = int(re.findall(r'\d+', parts[0])[0]) if re.findall(r'\d+', parts[0]) else 0
+        score_str = re.findall(r'\d+', parts[0])
+        score = int(score_str[0]) if score_str else 0
         return {"score": score, "motivo": parts[1].strip() if len(parts) > 1 else res}
     except: return {"score": 0, "motivo": "Erro IA"}
 
@@ -98,21 +101,25 @@ def sugerir_novo_dono(atual, lista):
     return random.choice(cand) if cand else atual
 
 # ==========================================
-# 🖥️ INTERFACE (CORRIGIDA)
+# 🖥️ INTERFACE
 # ==========================================
+with st.sidebar:
+    st.header("⚙️ Configurações")
+    filtrar_duplicados = st.checkbox("Remover Duplicidade", value=True)
+    st.markdown("---")
+    min_score = st.slider("Régua de Aderência (%):", 0, 100, 30)
+
 tab_med, tab_estetico = st.tabs(["🏥 UNIVERSO MED", "💆‍♀️ UNIVERSO ESTÉTICO"])
 
 def renderizar_interface(cat_cod, cat_nome):
     perfil, data = buscar_perfil_por_categoria(cat_cod)
     
-    # Status do Cérebro
     if perfil:
         st.success(f"Cérebro {cat_nome} Ativo (Atualizado: {pd.to_datetime(data).strftime('%d/%m')})")
-        with st.expander("Ver ICP"): st.write(perfil)
+        with st.expander("Ver Perfil ICP"): st.write(perfil)
     else:
         st.warning(f"Cérebro {cat_nome} Vazio.")
 
-    # Área de Treino
     with st.expander(f"📚 Treinar {cat_nome}", expanded=not perfil):
         arqs = st.file_uploader(f"Vendas {cat_nome}", type="csv", accept_multiple_files=True, key=f"up_{cat_cod}")
         if arqs and st.button(f"Treinar ({cat_cod})"):
@@ -130,37 +137,36 @@ def renderizar_interface(cat_cod, cat_nome):
         client = OpenAI(api_key=OPENAI_API_KEY)
         if f'run_{cat_cod}' not in st.session_state: st.session_state[f'run_{cat_cod}'] = False
         
-        # 1. Leitura Segura
+        # 1. Leitura Segura (AGORA FUNCIONA)
         df_l = limpar_csv_seguro(arquivo_perdas)
         
-        # 2. Mapeamento Inteligente (SEM TRAVAR)
+        # 2. Mapeamento de Colunas (Busca "motivo" ignorando maiúsculas/minúsculas)
         cols = df_l.columns
+        c_motivo = next((c for c in cols if 'motivo' in c.lower()), None)
         c_val = next((c for c in cols if 'valor' in c.lower()), None)
-        c_motivo = next((c for c in cols if 'motivo' in c.lower()), None) # Se não achar, vira None
         c_nome = next((c for c in cols if any(x in c.lower() for x in ['nome', 'cliente', 'lead'])), cols[0])
         c_vend = next((c for c in cols if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
-
-        # 3. Tratamento Inicial
+        
         if not c_vend: df_l['Vend'] = "N/A"; c_vend = 'Vend'
+        
+        # Conversão de Valor
         df_l['Valor_Real'] = df_l[c_val].apply(converter_valor_br) if c_val else 0.0
         
-        # 4. Filtro de Duplicidade (BLINDADO)
+        # 3. Filtro de Duplicidade (AGORA VAI ACHAR A COLUNA)
         removidos = 0
         df_limpo = df_l.copy()
         
         if filtrar_duplicados and c_motivo:
-            # Só filtra se achou a coluna de motivo
-            mask = df_l[c_motivo].astype(str).str.contains(r'dupli|teste|cliente|repetido', case=False, regex=True)
+            # Filtra lixo
+            mask = df_l[c_motivo].astype(str).str.contains(r'dupli|teste|cliente|repetido|já comprei', case=False, regex=True)
             df_limpo = df_l[~mask].copy()
             removidos = len(df_l) - len(df_limpo)
-        elif filtrar_duplicados and not c_motivo:
-            st.warning("⚠️ Coluna 'Motivo' não encontrada. Filtro de duplicidade ignorado.")
-
+        
         # Rotação
         lista_vends = df_limpo[c_vend].dropna().unique().tolist()
         df_limpo['Novo Dono'] = df_limpo[c_vend].apply(lambda x: sugerir_novo_dono(x, lista_vends))
 
-        # 5. Dashboard (SEMPRE APARECE)
+        # 4. Dashboard
         k1, k2, k3 = st.columns(3)
         k1.metric("Leads", len(df_limpo))
         k2.metric("Lixo Removido", removidos)
@@ -173,7 +179,7 @@ def renderizar_interface(cat_cod, cat_nome):
                 top = df_limpo.groupby(c_motivo)['Valor_Real'].sum().nlargest(8).reset_index()
                 st.plotly_chart(px.bar(top, y=c_motivo, x='Valor_Real', orientation='h', title="Gargalos Financeiros"), use_container_width=True)
         
-        # 6. Botão de IA
+        # 5. Análise IA
         if st.button(f"🚀 Analisar ({cat_nome})") or st.session_state[f'run_{cat_cod}']:
             if not st.session_state[f'run_{cat_cod}']:
                 with st.spinner("IA Analisando..."):
@@ -182,16 +188,19 @@ def renderizar_interface(cat_cod, cat_nome):
                     
                     df_limpo['Score'] = [r['score'] for r in res]
                     df_limpo['Justificativa'] = [r['motivo'] for r in res]
-                    df_limpo['Nota'] = (df_limpo['Score']/20).round(1)
+                    
+                    # Converte para numérico de forma segura para evitar erro de tipo
+                    s_score = pd.to_numeric(df_limpo['Score'], errors='coerce').fillna(0).clip(0, 100)
+                    df_limpo['Nota'] = (s_score/20).round(1)
+                    
                     st.session_state[f'data_{cat_cod}'] = df_limpo
                     st.session_state[f'run_{cat_cod}'] = True
                     st.rerun()
 
-            # 7. Resultados Finais
+            # Resultados
             final = st.session_state[f'data_{cat_cod}']
             show = final[final['Score'] >= min_score].copy()
             
-            # Tabela Limpa
             cols = [c_nome, 'Novo Dono', c_vend, 'Valor_Real', 'Nota', 'Score', 'Justificativa']
             if c_motivo: cols.insert(3, c_motivo)
             
@@ -201,7 +210,6 @@ def renderizar_interface(cat_cod, cat_nome):
                 "Valor_Real": st.column_config.NumberColumn(format="R$ %.2f")
             }, use_container_width=True)
             
-            # Download
             csv = show[cols].to_csv(sep=';', index=False, encoding='utf-8-sig')
             st.download_button(f"📥 Baixar CSV {cat_nome}", csv, f"recuperacao_{cat_cod}.csv", "text/csv")
 
