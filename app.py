@@ -23,22 +23,33 @@ except:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Contourline Dual Intelligence", layout="wide")
-st.title("🏛️ Contourline: Dual Intelligence v59")
+st.title("🏛️ Contourline: Dual Intelligence v60")
 
 # ==========================================
-# ⚙️ FUNÇÕES DE BANCO DE DADOS (DUAL CORE)
+# ⚙️ BARRA LATERAL (RESTAUROU OS FILTROS!)
+# ==========================================
+with st.sidebar:
+    st.header("⚙️ Configurações Globais")
+    st.info("Estes filtros aplicam-se a ambas as abas (Med e Estético).")
+    
+    # Filtro 1: Duplicidade
+    filtrar_duplicados = st.checkbox("Remover Duplicidade/Testes", value=True, help="Remove leads marcados como teste, duplicado ou já cliente.")
+    
+    # Filtro 2: Régua
+    st.markdown("---")
+    min_score = st.slider("Régua de Aderência Mínima (%):", 0, 100, 30, help="Leads com nota abaixo disso serão ocultos na tabela final.")
+
+# ==========================================
+# ⚙️ FUNÇÕES DE BANCO DE DADOS
 # ==========================================
 
 def buscar_perfil_por_categoria(categoria):
-    """Busca o perfil MED ou ESTETICO mais recente"""
     try:
-        # Filtra pela coluna 'categoria'
         response = supabase.table('perfis_icp')\
             .select("*")\
             .eq('categoria', categoria)\
             .order('created_at', desc=True)\
             .limit(1).execute()
-        
         if response.data and len(response.data) > 0:
             return response.data[0]['texto_perfil'], response.data[0]['created_at']
         return None, None
@@ -47,13 +58,8 @@ def buscar_perfil_por_categoria(categoria):
         return None, None
 
 def salvar_perfil(texto, categoria, nome_arquivo="Upload Manual"):
-    """Salva com a etiqueta correta (MED ou ESTETICO)"""
     try:
-        dados = {
-            "texto_perfil": texto,
-            "origem_arquivo": nome_arquivo,
-            "categoria": categoria
-        }
+        dados = {"texto_perfil": texto, "origem_arquivo": nome_arquivo, "categoria": categoria}
         supabase.table('perfis_icp').insert(dados).execute()
         return True
     except Exception as e:
@@ -118,7 +124,7 @@ def treinar_ia(client, lista_arquivos, categoria_nome):
     prompt = f"""
     Analise esta base de vendas do segmento {categoria_nome} da Contourline: {amostra}. 
     {produtos_top}
-    Crie um PERFIL DE CLIENTE IDEAL (ICP) robusto para este segmento específico.
+    Crie um PERFIL DE CLIENTE IDEAL (ICP) robusto para este segmento.
     """
     icp_gerado = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content
     return icp_gerado, ", ".join(nomes)
@@ -139,108 +145,127 @@ def extrair_nota_segura(texto_ia):
 
 def pontuar_lead(client, row, icp):
     try:
-        prompt = f"ICP (Referência): {icp}. LEAD (Analisar): {row}. Nota 0-100 de aderência. Responda: NOTA | MOTIVO."
+        prompt = f"ICP (Referência): {icp}. LEAD (Analisar): {row}. Nota 0-100. Responda: NOTA | MOTIVO."
         res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content
         parts = res.split('|')
         return {"score": extrair_nota_segura(parts[0]), "motivo": parts[1].strip() if len(parts) > 1 else res}
     except: return {"score": 0, "motivo": "Erro"}
 
 # ==========================================
-# 🖥️ INTERFACE PRINCIPAL (AS ABAS)
+# 🖥️ INTERFACE PRINCIPAL
 # ==========================================
 
-# Criação das abas gigantes para separar os mundos
-tab_med, tab_estetico = st.tabs(["🏥 UNIVERSO MED (Médicos)", "💆‍♀️ UNIVERSO ESTÉTICO (Clínicas)"])
+tab_med, tab_estetico = st.tabs(["🏥 UNIVERSO MED", "💆‍♀️ UNIVERSO ESTÉTICO"])
 
-def renderizar_interface(categoria_cod, categoria_nome, icone):
-    """Função que desenha a tela inteira dependendo da aba escolhida"""
+def renderizar_interface(categoria_cod, categoria_nome):
     
-    # 1. Busca memória específica desta categoria
+    # 1. Busca memória
     perfil, data = buscar_perfil_por_categoria(categoria_cod)
     
     col_status, col_upload = st.columns([1, 2])
-    
     with col_status:
         if perfil:
-            st.success(f"**Cérebro {categoria_nome} Ativo**\n\nÚltimo treino: {pd.to_datetime(data).strftime('%d/%m/%Y')}")
-            with st.expander(f"Ver ICP {categoria_nome}"):
-                st.write(perfil)
+            st.success(f"**Cérebro {categoria_nome} Ativo**\n\n📅 {pd.to_datetime(data).strftime('%d/%m/%Y')}")
+            with st.expander("Ver ICP"): st.write(perfil)
         else:
-            st.warning(f"⚠️ Cérebro {categoria_nome} Vazio. Precisa treinar!")
+            st.warning(f"⚠️ Cérebro Vazio.")
 
-    # 2. Área de Treinamento (Só para essa categoria)
-    with st.expander(f"📚 Treinar/Atualizar Perfil {categoria_nome}", expanded=not perfil):
-        st.info(f"Suba aqui apenas as VENDAS CONCLUÍDAS de **{categoria_nome}**.")
-        arquivos_venda = st.file_uploader(f"Upload Vendas {categoria_nome}", type="csv", accept_multiple_files=True, key=f"vendas_{categoria_cod}")
-        
-        if arquivos_venda:
-            if st.button(f"Processar e Salvar ({categoria_nome})", key=f"bt_treino_{categoria_cod}"):
-                client = OpenAI(api_key=OPENAI_API_KEY)
-                with st.spinner(f"Criando inteligência para {categoria_nome}..."):
-                    novo_perfil, nomes = treinar_ia(client, arquivos_venda, categoria_nome)
-                    if salvar_perfil(novo_perfil, categoria_cod, nomes):
-                        st.success("Salvo no banco com sucesso!")
-                        st.rerun()
+    # 2. Treinamento
+    with st.expander(f"📚 Treinar Perfil {categoria_nome}", expanded=not perfil):
+        st.info(f"Suba vendas de **{categoria_nome}**.")
+        arquivos_venda = st.file_uploader(f"Vendas {categoria_nome}", type="csv", accept_multiple_files=True, key=f"v_{categoria_cod}")
+        if arquivos_venda and st.button(f"Treinar IA ({categoria_nome})", key=f"bt_tr_{categoria_cod}"):
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            with st.spinner("Treinando..."):
+                novo, nomes = treinar_ia(client, arquivos_venda, categoria_nome)
+                if salvar_perfil(novo, categoria_cod, nomes):
+                    st.success("Salvo!"); st.rerun()
 
-    st.markdown(f"### 🕵️ Analisar Leads Perdidos ({categoria_nome})")
-    st.caption(f"Os leads que você subir aqui serão comparados EXCLUSIVAMENTE com o padrão {categoria_nome}.")
+    st.markdown("---")
+    st.subheader(f"🕵️ Recuperação de Leads ({categoria_nome})")
     
-    arquivo_perdas = st.file_uploader(f"Upload Perdas {categoria_nome}", type="csv", key=f"perdas_{categoria_cod}")
+    arquivo_perdas = st.file_uploader(f"Upload Leads Perdidos {categoria_nome}", type="csv", key=f"p_{categoria_cod}")
     
-    # Só libera análise se tiver perfil no banco
     if perfil and arquivo_perdas:
         client = OpenAI(api_key=OPENAI_API_KEY)
         if f'proc_{categoria_cod}' not in st.session_state: st.session_state[f'proc_{categoria_cod}'] = False
         
-        # Leitura e Tratamento (Padrão para ambas as abas)
+        # --- PROCESSAMENTO E LIMPEZA (AQUI ESTAVA O PROBLEMA) ---
         df_l = limpar_csv_seguro(arquivo_perdas)
+        
+        # Mapeamento
+        col_motivo = next((c for c in df_l.columns if 'motivo' in c.lower()), "Motivo")
         col_val = next((c for c in df_l.columns if 'valor' in c.lower()), None)
+        col_nome = next((c for c in df_l.columns if any(x in c.lower() for x in ['nome', 'cliente'])), "Lead")
         col_vend = next((c for c in df_l.columns if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
         
         if not col_vend: df_l['Vendedor_Orig'] = "N/A"; col_vend = 'Vendedor_Orig'
+        
+        # Conversão de Valor
         df_l['Valor_Calc'] = df_l[col_val].apply(converter_valor_br) if col_val else 0.0
         
-        lista_vendedores = df_l[col_vend].dropna().unique().tolist()
-        df_l['Sugestão Novo Dono'] = df_l[col_vend].apply(lambda x: sugerir_novo_dono(x, lista_vendedores))
+        # --- APLICAÇÃO DO FILTRO DE DUPLICIDADE (RESTAURADO) ---
+        if filtrar_duplicados:
+            mask_lixo = df_l[col_motivo].astype(str).str.contains(r'dupli|teste|cliente|repetido|já comprei', case=False, regex=True)
+            df_limpo = df_l[~mask_lixo].copy()
+            removidos = len(df_l) - len(df_limpo)
+        else:
+            df_limpo = df_l.copy()
+            removidos = 0
+            
+        # Rotação
+        lista_vendedores = df_limpo[col_vend].dropna().unique().tolist()
+        df_limpo['Sugestão Novo Dono'] = df_limpo[col_vend].apply(lambda x: sugerir_novo_dono(x, lista_vendedores))
 
-        # Dashboard rápido
-        k1, k2 = st.columns(2)
-        k1.metric("Leads para Recuperar", len(df_l))
-        k2.metric("Valor em Risco", f"R$ {df_l['Valor_Calc'].sum():,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
+        # --- DASHBOARD (RESTAURADO) ---
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Leads Únicos", len(df_limpo))
+        k2.metric("Removidos (Duplicados)", removidos, delta_color="inverse")
+        k3.metric("Valor em Risco", f"R$ {df_limpo['Valor_Calc'].sum():,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
         
-        if st.button(f"🚀 Iniciar Recuperação {categoria_nome}", key=f"bt_proc_{categoria_cod}") or st.session_state[f'proc_{categoria_cod}']:
+        g1, g2 = st.columns(2)
+        with g1: st.plotly_chart(px.pie(df_limpo, names=col_motivo, title="Motivos", hole=0.4), use_container_width=True)
+        with g2: 
+            top_fin = df_limpo.groupby(col_motivo)['Valor_Calc'].sum().nlargest(8).reset_index()
+            st.plotly_chart(px.bar(top_fin, y=col_motivo, x='Valor_Calc', orientation='h', title="Gargalos Financeiros"), use_container_width=True)
+        
+        # --- BOTÃO DE AÇÃO ---
+        if st.button(f"🚀 Analisar Leads ({categoria_nome})", key=f"bt_go_{categoria_cod}") or st.session_state[f'proc_{categoria_cod}']:
             if not st.session_state[f'proc_{categoria_cod}']:
-                with st.spinner(f"Aplicando filtro {categoria_nome}..."):
+                with st.spinner(f"Comparando com Perfil {categoria_nome}..."):
                     with ThreadPoolExecutor(max_workers=15) as executor:
-                        res = list(executor.map(lambda row: pontuar_lead(client, row, perfil), df_l.to_dict('records')))
+                        res = list(executor.map(lambda row: pontuar_lead(client, row, perfil), df_limpo.to_dict('records')))
                     
                     s_scores = pd.Series([r['score'] for r in res])
-                    df_l['Score_Pct'] = pd.to_numeric(s_scores, errors='coerce').fillna(0).clip(0, 100)
-                    df_l['Justificativa'] = [r['motivo'] for r in res]
-                    df_l['Nota'] = (df_l['Score_Pct'] / 20).round(1)
+                    df_limpo['Score_Pct'] = pd.to_numeric(s_scores, errors='coerce').fillna(0).clip(0, 100)
+                    df_limpo['Justificativa'] = [r['motivo'] for r in res]
+                    df_limpo['Nota'] = (df_limpo['Score_Pct'] / 20).round(1)
                     
-                    st.session_state[f'df_{categoria_cod}'] = df_l
+                    st.session_state[f'df_{categoria_cod}'] = df_limpo
                     st.session_state[f'proc_{categoria_cod}'] = True
                     st.rerun()
 
             # Resultado
             df_final = st.session_state[f'df_{categoria_cod}']
-            df_show = df_final[df_final['Score_Pct'] >= 30].copy() # Filtro padrão 30%
             
-            # Exibição
-            cols_show = [c for c in ['Nome', 'Lead', 'Cliente'] if c in df_show.columns]
-            col_nome = cols_show[0] if cols_show else df_show.columns[0]
+            # --- APLICAÇÃO DO FILTRO DA RÉGUA (RESTAURADO) ---
+            df_show = df_final[df_final['Score_Pct'] >= min_score].copy()
+            ocultos = len(df_final) - len(df_show)
+            if ocultos > 0: st.warning(f"⚠️ {ocultos} leads ocultos pela régua (<{min_score}%).")
             
-            df_export = df_show[[col_nome, 'Sugestão Novo Dono', col_vend, 'Valor_Calc', 'Nota', 'Score_Pct', 'Justificativa']].sort_values(['Nota'], ascending=False)
+            # Tabela
+            cols_show = [c for c in [col_nome, 'Sugestão Novo Dono', col_vend, 'Valor_Calc', 'Nota', 'Score_Pct', 'Justificativa'] if c in df_show.columns]
+            df_export = df_show[cols_show].sort_values(['Nota'], ascending=False)
             
-            st.dataframe(df_export, use_container_width=True)
+            st.dataframe(df_export, column_config={
+                "Nota": st.column_config.NumberColumn(format="⭐ %.1f"),
+                "Score_Pct": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
+                "Valor_Calc": st.column_config.NumberColumn(format="R$ %.2f")
+            }, use_container_width=True)
             
             csv = df_export.to_csv(sep=';', index=False, encoding='utf-8-sig')
             st.download_button(f"📥 Baixar CSV {categoria_nome}", csv, f"recuperacao_{categoria_cod}.csv", "text/csv")
 
-# --- EXECUÇÃO DAS ABAS ---
-with tab_med:
-    renderizar_interface("MED", "MED", "🏥")
-
-with tab_estetico:
-    renderizar_interface("ESTETICO", "ESTÉTICO", "💆‍♀️")
+# --- EXECUÇÃO ---
+with tab_med: renderizar_interface("MED", "MED")
+with tab_estetico: renderizar_interface("ESTETICO", "ESTÉTICO")
