@@ -66,7 +66,7 @@ def treinar_ia(client, arquivos, categoria):
         nomes.append(arq.name)
         if arq.name.endswith('.txt'):
             conteudo = arq.read().decode('utf-8')
-            regras_manuais += f"\n--- REGRAS MANUAIS ({arq.name}) ---\n{conteudo}\n"
+            regras_manuais += f"\n--- REGRAS ({arq.name}) ---\n{conteudo}\n"
             arq.seek(0)
         else:
             df_temp = limpar_csv_seguro(arq)
@@ -86,15 +86,12 @@ def treinar_ia(client, arquivos, categoria):
     prompt = f"""
     Atue como Diretor Comercial da Contourline (Linha {categoria}).
     
-    DADOS DE VENDAS:
-    {amostra_dados}
+    DADOS: {amostra_dados}
     {produtos_top}
     
-    REGRAS OBRIGATÓRIAS:
-    {regras_manuais}
+    REGRAS OBRIGATÓRIAS: {regras_manuais}
     
-    MISSÃO:
-    Crie o ICP definitivo para {categoria}. Priorize as Regras Manuais.
+    MISSÃO: Crie o ICP definitivo para {categoria}.
     """
     return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content, ", ".join(nomes)
 
@@ -149,48 +146,52 @@ def renderizar_interface(cat_cod, cat_nome):
         client = OpenAI(api_key=OPENAI_API_KEY)
         if f'run_{cat_cod}' not in st.session_state: st.session_state[f'run_{cat_cod}'] = False
         
-        # Leitura Segura
+        # Leitura Inicial
         df_l = limpar_csv_seguro(arquivo_perdas)
-        cols = df_l.columns
+        todas_colunas = list(df_l.columns)
         
-        # --- MAPEAMENTO DE COLUNAS (DATE HUNTER) ---
-        c_motivo = next((c for c in cols if 'motivo' in c.lower()), None)
-        c_val = next((c for c in cols if 'valor' in c.lower()), None)
-        c_nome = next((c for c in cols if any(x in c.lower() for x in ['nome', 'cliente', 'lead'])), cols[0])
-        c_vend = next((c for c in cols if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
+        # --- MAPEAMENTO MANUAL INTELIGENTE ---
+        st.info("👇 Confirme as colunas identificadas (você pode alterar se estiver errado):")
+        c1, c2, c3 = st.columns(3)
         
-        # CAÇADOR DE DATAS (HIERARQUIA)
-        # 1. Prioridade: Fechamento ou Perda
-        c_data = next((c for c in cols if any(x in c.lower() for x in ['fechamento', 'perda', 'closing'])), None)
-        # 2. Secundário: Data de criação, mas EVITA nascimento
-        if not c_data:
-            c_data = next((c for c in cols if 'data' in c.lower() and 'nasc' not in c.lower()), None)
-        
-        # Feedback Visual para você conferir
-        if c_data:
-            st.caption(f"📅 Coluna de Data identificada: **{c_data}**")
-        else:
-            st.error("⚠️ Nenhuma coluna de data (Fechamento/Perda) encontrada no CSV.")
+        # Tenta adivinhar os indices iniciais
+        idx_motivo = next((i for i, c in enumerate(todas_colunas) if 'motivo' in c.lower()), 0)
+        idx_valor = next((i for i, c in enumerate(todas_colunas) if 'valor' in c.lower()), 0)
+        # Tenta adivinhar DATA (Fechamento > Perda > Data)
+        idx_data = next((i for i, c in enumerate(todas_colunas) if 'fechamento' in c.lower()), 
+                   next((i for i, c in enumerate(todas_colunas) if 'perda' in c.lower()), 
+                   next((i for i, c in enumerate(todas_colunas) if 'data' in c.lower()), 0)))
 
+        with c1: c_motivo = st.selectbox("Coluna Motivo", options=todas_colunas, index=idx_motivo, key=f"s_m_{cat_cod}")
+        with c2: c_val = st.selectbox("Coluna Valor", options=todas_colunas, index=idx_valor, key=f"s_v_{cat_cod}")
+        with c3: c_data = st.selectbox("Coluna Data (Fechamento)", options=todas_colunas, index=idx_data, key=f"s_d_{cat_cod}")
+        
+        # Mapeamento Restante (Automático)
+        c_nome = next((c for c in todas_colunas if any(x in c.lower() for x in ['nome', 'cliente', 'lead'])), todas_colunas[0])
+        c_vend = next((c for c in todas_colunas if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
         if not c_vend: df_l['Vend'] = "N/A"; c_vend = 'Vend'
         
-        # Conversão de Valor
-        df_l['Valor_Real'] = df_l[c_val].apply(converter_valor_br) if c_val else 0.0
+        # --- PROCESSAMENTO ---
+        # Conversão Valor
+        df_l['Valor_Real'] = df_l[c_val].apply(converter_valor_br)
         
-        # TRATAMENTO DE DATA (PANDAS INTELIGENTE)
-        if c_data:
-            # Force string conversion first, strip whitespace
+        # Conversão Data (Blindada)
+        try:
+            # Tenta converter o que o usuário escolheu
             df_l[c_data] = df_l[c_data].astype(str).str.strip()
-            # dayfirst=True ajuda no padrão BR (DD/MM), errors='coerce' transforma lixo em NaT
             df_l['Data_Obj'] = pd.to_datetime(df_l[c_data], dayfirst=True, errors='coerce')
             df_l['Data_Formatada'] = df_l['Data_Obj'].dt.strftime('%d/%m/%Y').fillna("-")
-        else:
+            
+            # Mostra uma amostra para o usuário conferir
+            amostra_data = df_l['Data_Formatada'].iloc[0] if len(df_l) > 0 else "-"
+            st.caption(f"📅 Exemplo de data lida: {amostra_data} (Se estiver '-' verifique a coluna escolhida)")
+        except:
             df_l['Data_Formatada'] = "-"
 
         # Filtros
         df_limpo = df_l.copy()
         removidos = 0
-        if filtrar_duplicados and c_motivo:
+        if filtrar_duplicados:
             mask = df_l[c_motivo].astype(str).str.contains(r'dupli|teste|cliente|repetido|já comprei|ganho', case=False, regex=True)
             df_limpo = df_l[~mask].copy()
             removidos = len(df_l) - len(df_limpo)
@@ -205,11 +206,10 @@ def renderizar_interface(cat_cod, cat_nome):
         k3.metric("Risco Financeiro", f"R$ {df_limpo['Valor_Real'].sum():,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
 
         g1, g2 = st.columns(2)
-        if c_motivo:
-            with g1: st.plotly_chart(px.pie(df_limpo, names=c_motivo, title="Motivos", hole=0.4), use_container_width=True)
-            with g2: 
-                top = df_limpo.groupby(c_motivo)['Valor_Real'].sum().nlargest(8).reset_index()
-                st.plotly_chart(px.bar(top, y=c_motivo, x='Valor_Real', orientation='h', title="Gargalos Financeiros"), use_container_width=True)
+        with g1: st.plotly_chart(px.pie(df_limpo, names=c_motivo, title="Motivos", hole=0.4), use_container_width=True)
+        with g2: 
+            top = df_limpo.groupby(c_motivo)['Valor_Real'].sum().nlargest(8).reset_index()
+            st.plotly_chart(px.bar(top, y=c_motivo, x='Valor_Real', orientation='h', title="Gargalos Financeiros"), use_container_width=True)
         
         # IA Analysis
         if st.button(f"🚀 Analisar ({cat_nome})") or st.session_state[f'run_{cat_cod}']:
@@ -231,18 +231,21 @@ def renderizar_interface(cat_cod, cat_nome):
             show = final[final['Score'] >= min_score].copy()
             
             # TABELA
-            cols_base = [c_nome, 'Novo Dono', c_vend, 'Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa']
-            if c_motivo: cols_base.insert(3, c_motivo)
-            cols_final = [c for c in cols_base if c in show.columns]
+            cols = [c_nome, 'Novo Dono', c_vend, 'Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa', c_motivo]
+            # Remove duplicatas se c_motivo já estiver na lista
+            cols = list(dict.fromkeys(cols))
+            
+            # Filtra colunas existentes
+            cols_existentes = [c for c in cols if c in show.columns]
 
-            st.dataframe(show[cols_final].sort_values('Nota', ascending=False), column_config={
+            st.dataframe(show[cols_existentes].sort_values('Nota', ascending=False), column_config={
                 "Nota": st.column_config.NumberColumn(format="⭐ %.1f"),
                 "Valor_Real": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Data_Formatada": st.column_config.TextColumn("Data Fechamento")
+                "Data_Formatada": st.column_config.TextColumn("Data")
             }, use_container_width=True)
             
             # EXCEL BRASIL
-            df_export = show[cols_final].copy()
+            df_export = show[cols_existentes].copy()
             df_export['Nota'] = df_export['Nota'].apply(lambda x: str(x).replace('.', ','))
             df_export['Valor_Real'] = df_export['Valor_Real'].apply(lambda x: f"{x:.2f}".replace('.', ','))
             
