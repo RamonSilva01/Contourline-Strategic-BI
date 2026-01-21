@@ -23,7 +23,7 @@ except:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Contourline Dual Intelligence", layout="wide")
-st.title("🏛️ Contourline: Dual Intelligence v64")
+st.title("🏛️ Contourline: Dual Intelligence")
 
 # ==========================================
 # ⚙️ FUNÇÕES AUXILIARES
@@ -43,29 +43,32 @@ def salvar_perfil(texto, categoria, nome_arquivo):
     except: return False
 
 def limpar_csv_seguro(arquivo):
-    """Lê CSV lidando com a linha chata 'sep=' do RD Station"""
     corpo = arquivo.read().decode('utf-8-sig')
     arquivo.seek(0)
-    # Detecta se a primeira linha é lixo técnico
     pular = 1 if corpo.startswith('sep=') else 0
     return pd.read_csv(io.StringIO(corpo), skiprows=pular, sep=None, engine='python', dtype=str).fillna("N/A")
 
 def converter_valor_br(valor_str):
-    """Converte R$ 1.000,00 para float 1000.00"""
     try:
         if pd.isna(valor_str) or str(valor_str).strip() in ["N/A", "nan", ""]: return 0.0
         limpo = str(valor_str).replace('R$', '').strip()
         if ',' in limpo: 
-            # Remove ponto de milhar e troca vírgula por ponto decimal
             limpo = limpo.replace('.', '').replace(',', '.')
         return float(limpo)
     except: return 0.0
 
 def processar_data(data_str):
-    """Padroniza datas"""
-    if pd.isna(data_str) or str(data_str) in ["N/A", "nan", ""]: return None
-    formatos = ['%d/%m/%Y', '%d/%m/%Y %H:%M', '%Y-%m-%d', '%Y-%m-%d %H:%M:%S']
-    data_limpa = str(data_str).split('.')[0]
+    """Lê datas do RD Station/Excel (Prioriza Dia/Mes/Ano)"""
+    if pd.isna(data_str) or str(data_str) in ["N/A", "nan", "-", ""]: return None
+    # Lista de formatos comuns no Brasil
+    formatos = [
+        '%d/%m/%Y',          # 25/12/2025
+        '%d/%m/%Y %H:%M',    # 25/12/2025 14:30
+        '%d/%m/%Y %H:%M:%S', # 25/12/2025 14:30:00
+        '%Y-%m-%d',          # 2025-12-25
+        '%d-%m-%Y'           # 25-12-2025
+    ]
+    data_limpa = str(data_str).strip()
     for fmt in formatos:
         try: return datetime.strptime(data_limpa, fmt)
         except ValueError: continue
@@ -117,14 +120,12 @@ tab_med, tab_estetico = st.tabs(["🏥 UNIVERSO MED", "💆‍♀️ UNIVERSO ES
 def renderizar_interface(cat_cod, cat_nome):
     perfil, data = buscar_perfil_por_categoria(cat_cod)
     
-    # 1. Status do Cérebro
     if perfil:
         st.success(f"Cérebro {cat_nome} Ativo (Atualizado: {pd.to_datetime(data).strftime('%d/%m')})")
         with st.expander("Ver Perfil ICP"): st.write(perfil)
     else:
         st.warning(f"Cérebro {cat_nome} Vazio.")
 
-    # 2. Área de Treino
     with st.expander(f"📚 Treinar {cat_nome}", expanded=not perfil):
         arqs = st.file_uploader(f"Vendas {cat_nome}", type="csv", accept_multiple_files=True, key=f"up_{cat_cod}")
         if arqs and st.button(f"Treinar ({cat_cod})"):
@@ -143,39 +144,43 @@ def renderizar_interface(cat_cod, cat_nome):
         if f'run_{cat_cod}' not in st.session_state: st.session_state[f'run_{cat_cod}'] = False
         
         # --- ENGENHARIA DE DADOS ---
-        # Leitura Segura
         df_l = limpar_csv_seguro(arquivo_perdas)
         cols = df_l.columns
         
-        # Mapeamento Inteligente (Acha as colunas independente do nome exato)
+        # 1. MAPEAMENTO DE COLUNAS (PRIORIDADE NO FECHAMENTO)
         c_motivo = next((c for c in cols if 'motivo' in c.lower()), None)
         c_val = next((c for c in cols if 'valor' in c.lower()), None)
         c_nome = next((c for c in cols if any(x in c.lower() for x in ['nome', 'cliente', 'lead'])), cols[0])
         c_vend = next((c for c in cols if any(x in c.lower() for x in ['vendedor', 'responsável'])), None)
-        # Busca Coluna de Data
-        c_data = next((c for c in cols if any(x in c.lower() for x in ['data', 'date', 'criado', 'created', 'perda', 'fechamento'])), None)
+        
+        # Lógica de Data: Busca EXATA por fechamento primeiro
+        c_data = next((c for c in cols if 'fechamento' in c.lower()), None)
+        # Se não achar fechamento, tenta perda
+        if not c_data: c_data = next((c for c in cols if 'perda' in c.lower()), None)
+        # Se não achar, tenta genérico
+        if not c_data: c_data = next((c for c in cols if 'data' in c.lower()), None)
         
         if not c_vend: df_l['Vend'] = "N/A"; c_vend = 'Vend'
         
-        # Conversão de Valor
+        # 2. CONVERSÃO
         df_l['Valor_Real'] = df_l[c_val].apply(converter_valor_br) if c_val else 0.0
         
         # Tratamento da Data
         if c_data:
-            df_l['Data_Formatada'] = df_l[c_data].apply(processar_data).apply(lambda x: x.strftime('%d/%m/%Y') if x else "-")
+            # Aplica o processador e formata só se tiver data válida
+            df_l['Data_Obj'] = df_l[c_data].apply(processar_data)
+            df_l['Data_Formatada'] = df_l['Data_Obj'].apply(lambda x: x.strftime('%d/%m/%Y') if x else "-")
         else:
             df_l['Data_Formatada'] = "-"
 
-        # Filtro de Duplicidade
+        # 3. FILTROS
         df_limpo = df_l.copy()
         removidos = 0
         if filtrar_duplicados and c_motivo:
-            # Remove testes, duplicados e clientes já convertidos
             mask = df_l[c_motivo].astype(str).str.contains(r'dupli|teste|cliente|repetido|já comprei|ganho', case=False, regex=True)
             df_limpo = df_l[~mask].copy()
             removidos = len(df_l) - len(df_limpo)
         
-        # Rotação de Vendedores
         lista_vends = df_limpo[c_vend].dropna().unique().tolist()
         df_limpo['Novo Dono'] = df_limpo[c_vend].apply(lambda x: sugerir_novo_dono(x, lista_vends))
 
@@ -192,17 +197,15 @@ def renderizar_interface(cat_cod, cat_nome):
                 top = df_limpo.groupby(c_motivo)['Valor_Real'].sum().nlargest(8).reset_index()
                 st.plotly_chart(px.bar(top, y=c_motivo, x='Valor_Real', orientation='h', title="Gargalos Financeiros"), use_container_width=True)
         
-        # --- BOTÃO DE AÇÃO ---
+        # --- IA ---
         if st.button(f"🚀 Analisar ({cat_nome})") or st.session_state[f'run_{cat_cod}']:
             if not st.session_state[f'run_{cat_cod}']:
-                with st.spinner("IA Analisando cada lead..."):
+                with st.spinner("IA Analisando..."):
                     with ThreadPoolExecutor(max_workers=10) as exe:
                         res = list(exe.map(lambda r: pontuar_lead(client, r, perfil), df_limpo.to_dict('records')))
                     
                     df_limpo['Score'] = [r['score'] for r in res]
                     df_limpo['Justificativa'] = [r['motivo'] for r in res]
-                    
-                    # Cálculo seguro da nota
                     s_score = pd.to_numeric(df_limpo['Score'], errors='coerce').fillna(0).clip(0, 100)
                     df_limpo['Nota'] = (s_score/20).round(1)
                     
@@ -210,28 +213,26 @@ def renderizar_interface(cat_cod, cat_nome):
                     st.session_state[f'run_{cat_cod}'] = True
                     st.rerun()
 
-            # --- RESULTADOS FINAIS ---
             final = st.session_state[f'data_{cat_cod}']
             show = final[final['Score'] >= min_score].copy()
             
-            # Montagem da Tabela para visualização na tela
-            cols = [c_nome, 'Novo Dono', c_vend, 'Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa']
-            if c_motivo: cols.insert(3, c_motivo)
+            # --- TABELA FINAL ---
+            # Define colunas garantindo que Data_Formatada existe
+            cols_base = [c_nome, 'Novo Dono', c_vend, 'Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa']
+            if c_motivo: cols_base.insert(3, c_motivo)
             
-            # Exibe na tela (Streamlit cuida da formatação visual)
-            st.dataframe(show[cols].sort_values('Nota', ascending=False), column_config={
+            # Filtra apenas colunas que realmente existem no dataframe (evita KeyError)
+            cols_final = [c for c in cols_base if c in show.columns]
+
+            st.dataframe(show[cols_final].sort_values('Nota', ascending=False), column_config={
                 "Nota": st.column_config.NumberColumn(format="⭐ %.1f"),
-                "Score": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
-                "Valor_Real": st.column_config.NumberColumn(format="R$ %.2f")
+                "Valor_Real": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Data_Formatada": st.column_config.TextColumn("Data Fechamento")
             }, use_container_width=True)
             
-            # --- EXPORTAÇÃO CORRIGIDA PARA EXCEL BRASIL ---
-            df_export = show[cols].copy()
-            
-            # Truque: Transforma Nota 3.5 em String "3,5" para o Excel brasileiro não ler como 35
+            # --- EXPORTAÇÃO EXCEL (FIX FINAL) ---
+            df_export = show[cols_final].copy()
             df_export['Nota'] = df_export['Nota'].apply(lambda x: str(x).replace('.', ','))
-            
-            # Truque: Transforma Valor em String "1.000,00"
             df_export['Valor_Real'] = df_export['Valor_Real'].apply(lambda x: f"{x:.2f}".replace('.', ','))
             
             csv = df_export.to_csv(sep=';', index=False, encoding='utf-8-sig')
