@@ -23,7 +23,7 @@ except:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Contourline Dual Intelligence", layout="wide")
-st.title("🏛️ Contourline:Intelligence")
+st.title("🏛️ Contourline: Dual Intelligence")
 
 # ==========================================
 # ⚙️ FUNÇÕES AUXILIARES
@@ -106,8 +106,23 @@ def pontuar_lead(client, row, icp):
     except: return {"score": 0, "motivo": "Erro IA"}
 
 def sugerir_novo_dono(atual, lista):
-    cand = [v for v in lista if v != atual and v not in ["N/A", "nan"]]
-    return random.choice(cand) if cand else atual
+    # --- LISTA NEGRA DE NÃO-VENDEDORES ---
+    bloqueados = [
+        "viviane santos", 
+        "jéssica oliveira", 
+        "bárbara kelly", 
+        "representantes contourline"
+    ]
+    
+    # Filtra: Não pode ser o atual, não pode ser vazio, e não pode estar na lista de bloqueados
+    candidatos = [
+        v for v in lista 
+        if v != atual 
+        and v not in ["N/A", "nan"] 
+        and str(v).lower().strip() not in bloqueados
+    ]
+    
+    return random.choice(candidatos) if candidatos else atual
 
 # ==========================================
 # 🖥️ INTERFACE
@@ -155,7 +170,7 @@ def renderizar_interface(cat_cod, cat_nome):
         c_motivo = next((c for c in cols if 'motivo' in c.lower()), None)
         # 2. Valor
         c_val = next((c for c in cols if 'valor' in c.lower()), None)
-        # 3. Equipamento (RESTAURADO)
+        # 3. Equipamento
         c_prod = next((c for c in cols if any(x in c.lower() for x in ['produto', 'equipamento', 'item'])), None)
         # 4. Data (Sniper)
         c_data = next((c for c in cols if 'data de fechamento' in c.lower()), None)
@@ -187,6 +202,7 @@ def renderizar_interface(cat_cod, cat_nome):
             df_limpo = df_l[~mask].copy()
             removidos = len(df_l) - len(df_limpo)
         
+        # ROTAÇÃO COM FILTRO
         lista_vends = df_limpo[c_vend].dropna().unique().tolist()
         df_limpo['Novo Dono'] = df_limpo[c_vend].apply(lambda x: sugerir_novo_dono(x, lista_vends))
 
@@ -222,23 +238,13 @@ def renderizar_interface(cat_cod, cat_nome):
             final = st.session_state[f'data_{cat_cod}']
             show = final[final['Score'] >= min_score].copy()
             
-            # --- TABELA FINAL COMPLETA (ORDEM CORRETA) ---
-            # 1. Dados do Cliente
+            # --- TABELA FINAL COMPLETA ---
             cols_finais = [c_nome]
-            
-            # 2. Donos
             cols_finais.extend(['Novo Dono', c_vend])
-            
-            # 3. Equipamento (Se existir)
             if c_prod: cols_finais.append(c_prod)
-            
-            # 4. Motivo (Se existir)
             if c_motivo: cols_finais.append(c_motivo)
-            
-            # 5. Dados Financeiros e IA
             cols_finais.extend(['Valor_Real', 'Nota', 'Data_Formatada', 'Justificativa'])
             
-            # Filtro de segurança (só pega o que existe)
             cols_finais = [c for c in cols_finais if c in show.columns]
 
             st.dataframe(show[cols_finais].sort_values('Nota', ascending=False), column_config={
